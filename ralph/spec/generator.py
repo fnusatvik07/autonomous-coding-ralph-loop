@@ -1,8 +1,7 @@
 """Spec generator - creates spec.md then prd.json from a task description.
 
-Two-step flow:
-  1. Task description → spec.md (human-readable application spec)
-  2. spec.md → prd.json (atomic task list for the coding loop)
+Generates both in a SINGLE session to avoid the cold-start overhead
+of two sessions. For large projects this can take 5-15 minutes.
 """
 
 from __future__ import annotations
@@ -22,70 +21,91 @@ from ralph.providers.base import BaseProvider
 
 console = Console()
 
+# Combined prompt that generates both spec.md AND prd.json in one session
+COMBINED_SYSTEM = SPEC_SYSTEM_PROMPT + """
+
+---
+
+AFTER writing spec.md, IMMEDIATELY proceed to create the task list.
+
+""" + PRD_SYSTEM_PROMPT
+
+COMBINED_USER = """\
+## Task Description
+
+{task_description}
+
+## Instructions
+
+Complete BOTH steps in this single session:
+
+**Step 1:** Use Glob and Read to examine the workspace. Then write a comprehensive \
+application specification to `.ralph/spec.md`.
+
+**Step 2:** Read your spec.md back, then create `.ralph/prd.json` with the \
+test-case-driven task list. Scale tasks to project complexity (20-200). \
+Each task = one testable behavior.
+
+Also create `init.sh` in the workspace root to set up the dev environment.
+
+Write both files using the Write tool. If Write fails for prd.json (file too large), \
+output the complete JSON in a ```json code block in your response.
+"""
+
 
 async def generate_spec(
     task_description: str,
     provider: BaseProvider,
     workspace_dir: str,
 ) -> PRD:
-    """Generate spec.md then prd.json from a task description.
-
-    Step 1: LLM writes .ralph/spec.md (application specification)
-    Step 2: LLM reads spec.md and writes .ralph/prd.json (task list)
-    """
+    """Generate spec.md and prd.json from a task description in one session."""
     ralph_dir = Path(workspace_dir) / ".ralph"
     ralph_dir.mkdir(exist_ok=True)
 
-    # Step 1: Generate spec.md
-    spec_path = ralph_dir / "spec.md"
-    if not spec_path.exists():
-        console.print("[bold cyan]Step 1: Generating specification (spec.md)...[/bold cyan]")
-        console.print(f"  Task: {task_description[:100]}...")
-
-        result = await provider.run_session(
-            system_prompt=SPEC_SYSTEM_PROMPT,
-            user_message=SPEC_USER_TEMPLATE.format(task_description=task_description),
-            max_turns=50,
-            on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
-        )
-
-        if not result.success:
-            raise RuntimeError(f"Spec generation failed: {result.error}")
-
-        # If agent didn't write spec.md via Write tool, save from response
-        if not spec_path.exists():
-            spec_path.write_text(result.final_response)
-            console.print("  [dim]Saved spec from response text[/dim]")
-
-    console.print(f"  [green]spec.md ready ({spec_path.stat().st_size} bytes)[/green]")
-
-    # Step 2: Generate prd.json from spec.md
     prd_path = ralph_dir / "prd.json"
+    spec_path = ralph_dir / "spec.md"
+
+    # If PRD already exists, just load it
+    if prd_path.exists():
+        console.print("[dim]Loading existing PRD...[/dim]")
+        return load_prd(workspace_dir)
+
+    # Generate both spec + PRD in ONE session
+    console.print("[bold cyan]Generating specification + task list...[/bold cyan]")
+    console.print(f"  Task: {task_description[:100]}...")
+    console.print("  [dim]This may take 5-15 minutes for complex projects.[/dim]")
+
+    result = await provider.run_session(
+        system_prompt=COMBINED_SYSTEM,
+        user_message=COMBINED_USER.format(task_description=task_description),
+        max_turns=200,  # Needs many turns for spec + 50-200 tasks
+        on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
+    )
+
+    if not result.success:
+        raise RuntimeError(f"Generation failed: {result.error}")
+
+    # Save spec from response if Write tool didn't work
+    if not spec_path.exists():
+        spec_path.write_text(result.final_response)
+        console.print("  [dim]Saved spec from response[/dim]")
+
+    # Save PRD from response if Write tool didn't work
     if not prd_path.exists():
-        console.print("[bold cyan]Step 2: Generating task list (prd.json)...[/bold cyan]")
+        prd_data = _extract_json(result.final_response)
+        if prd_data:
+            prd_path.write_text(json.dumps(prd_data, indent=2))
+            console.print("  [dim]Extracted PRD from response[/dim]")
+        else:
+            raise RuntimeError(
+                "LLM did not create .ralph/prd.json and no JSON found in response. "
+                "The session may have timed out. Try again or use a smaller task."
+            )
 
-        result = await provider.run_session(
-            system_prompt=PRD_SYSTEM_PROMPT,
-            user_message=PRD_USER_TEMPLATE,
-            max_turns=100,  # Large — generating 50-200 tasks needs many tool calls
-            on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
-        )
-
-        if not result.success:
-            raise RuntimeError(f"PRD generation failed: {result.error}")
-
-        # If agent didn't write prd.json via Write tool, try to extract JSON
-        if not prd_path.exists():
-            prd_data = _extract_json(result.final_response)
-            if prd_data:
-                prd_path.write_text(json.dumps(prd_data, indent=2))
-            else:
-                raise RuntimeError(
-                    "LLM did not create .ralph/prd.json and "
-                    "no JSON found in response"
-                )
-
-    return load_prd(workspace_dir)
+    prd = load_prd(workspace_dir)
+    console.print(f"  [green]spec.md: {spec_path.stat().st_size} bytes[/green]")
+    console.print(f"  [green]prd.json: {len(prd.tasks)} tasks[/green]")
+    return prd
 
 
 def load_prd(workspace_dir: str) -> PRD:
@@ -147,6 +167,7 @@ def save_prd(prd: PRD, workspace_dir: str) -> None:
 
 def _extract_json(text: str) -> dict | None:
     """Try to extract a JSON object from LLM response text."""
+    # Try code block first (most reliable)
     patterns = [
         r"```json\s*\n(.*?)\n```",
         r"```\s*\n(\{.*?\})\n```",
@@ -176,6 +197,7 @@ def _extract_json(text: str) -> dict | None:
                     except json.JSONDecodeError:
                         break
 
+    # Last resort: try whole text as JSON
     try:
         return json.loads(text)
     except json.JSONDecodeError:

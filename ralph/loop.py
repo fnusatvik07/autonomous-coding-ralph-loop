@@ -85,33 +85,44 @@ def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
     return create_provider(config.provider, **kwargs)
 
 
-def _print_progress(prd: PRD, iteration: int, cost: float) -> None:
-    table = Table(title=f"Iteration {iteration}")
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
+def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float, task) -> None:
+    """Print a rich iteration header with progress bar."""
     completed = len(prd.completed_tasks)
-    pending = len(prd.pending_tasks)
     total = len(prd.tasks)
-    failed = total - completed - pending
-    table.add_row("[green]Completed", str(completed))
-    table.add_row("[yellow]Pending", str(pending))
-    if failed:
-        table.add_row("[red]Failed", str(failed))
-    table.add_row("Progress", f"{prd.progress_pct:.0f}%")
-    if cost > 0:
-        table.add_row("Total Cost", f"${cost:.4f}")
-    console.print(table)
+    failed = total - completed - len(prd.pending_tasks)
+    pct = prd.progress_pct
+
+    # Progress bar
+    bar_width = 30
+    filled = int(bar_width * pct / 100)
+    bar = f"[green]{'█' * filled}[/green][dim]{'░' * (bar_width - filled)}[/dim]"
+
+    console.print()
+    console.print(f"[bold]{'─' * 70}[/bold]")
+    console.print(
+        f"  [bold cyan]Iteration {iteration}/{max_iter}[/bold cyan]"
+        f"  │  {bar} [bold]{pct:.0f}%[/bold]"
+        f"  │  [green]{completed}[/green]/[yellow]{len(prd.pending_tasks)}[/yellow]"
+        f"{'/' + f'[red]{failed}[/red]' if failed else ''}"
+        f"  │  [dim]${cost:.2f}[/dim]"
+    )
+    console.print(
+        f"  [bold]► {task.id}[/bold]: {task.title}"
+        f"  [dim]({task.category} │ P{task.priority} │ {len(task.acceptance_criteria)} criteria)[/dim]"
+    )
+    console.print(f"[bold]{'─' * 70}[/bold]")
 
 
 def _on_text(text: str) -> None:
-    """Default text callback (module-level, used if not overridden)."""
+    """Default text callback."""
     if text.strip():
         console.print(f"  {text.strip()}", highlight=False)
 
 
 def _on_tool(name: str, _input: dict) -> None:
-    """Default tool callback (module-level, used if not overridden)."""
-    console.print(f"  [dim]> {name}[/dim]")
+    """Default tool callback with colored tool names."""
+    color = "cyan" if name in ("Read", "Glob", "Grep") else "yellow" if name in ("Write", "Edit") else "blue" if name == "Bash" else "dim"
+    console.print(f"  [{color}]▸ {name}[/{color}]")
 
 
 def _detect_completion(response: str, workspace_dir: str, current_task_id: str) -> bool:
@@ -235,23 +246,22 @@ class RalphLoop:
                 console.print(f"[red]PRD error: {e}[/red]")
                 break
 
-            _print_progress(prd, iteration, self.cumulative_cost)
-
             next_task = prd.get_next_task()
             if not next_task:
                 cleanup_checkpoints(self.workspace_dir)
-                # Try to create a PR if gh CLI is available
                 await self._maybe_create_pr(prd, iteration - 1)
-                console.print(Panel(
-                    f"[bold green]ALL TASKS COMPLETE![/bold green]\n"
-                    f"Run: {self.run_id} | Iterations: {iteration - 1} | Cost: ${self.cumulative_cost:.4f}",
-                    title="Done",
-                ))
+                completed = len(prd.completed_tasks)
+                total = len(prd.tasks)
+                console.print()
+                console.print(f"[bold green]{'═' * 70}[/bold green]")
+                console.print(f"  [bold green]ALL {completed} TASKS COMPLETE![/bold green]")
+                console.print(f"  Run: {self.run_id} │ Iterations: {iteration - 1} │ Cost: ${self.cumulative_cost:.4f}")
+                console.print(f"[bold green]{'═' * 70}[/bold green]")
                 logger.info("complete: run=%s iterations=%d cost=$%.4f",
                              self.run_id, iteration - 1, self.cumulative_cost)
                 return
 
-            console.print(f"\n[bold]>>> {next_task.id}: {next_task.title}[/bold]")
+            _print_iteration_header(prd, iteration, self.config.max_iterations, self.cumulative_cost, next_task)
             logger.info("iteration %d: %s - %s", iteration, next_task.id, next_task.title)
 
             # Git checkpoint before starting task (rollback point)
@@ -296,39 +306,41 @@ class RalphLoop:
             self.cumulative_cost += coding_result.cost_usd
             log_session(self.workspace_dir, self.run_id, iteration, "coding", next_task.id, coding_result)
 
-            if coding_result.cost_usd > 0:
-                console.print(
-                    f"  [dim]${coding_result.cost_usd:.4f} | "
-                    f"{coding_result.tool_calls_made} tools | "
-                    f"{coding_result.duration_ms / 1000:.1f}s[/dim]"
-                )
+            # Session summary
+            console.print(
+                f"  [dim]───── Coding: ${coding_result.cost_usd:.4f} │ "
+                f"{coding_result.tool_calls_made} tools │ "
+                f"{coding_result.duration_ms / 1000:.0f}s ─────[/dim]"
+            )
 
-            # Handle session failure explicitly
+            # Handle session failure
             if not coding_result.success:
-                console.print(f"  [red]Session FAILED: {coding_result.error[:200]}[/red]")
+                console.print(f"  [bold red]✗ Session FAILED[/bold red]: {coding_result.error[:200]}")
                 self._handle_incomplete(prd, next_task, iteration, f"Session error: {coding_result.error[:300]}")
                 await self._inter_delay()
                 continue
 
-            # Auto-format code before QA review
+            # Auto-format
             fmt_ok, fmt_out = await auto_format(self.workspace_dir)
             if fmt_ok and "reformatted" in fmt_out.lower():
-                console.print("  [dim]Auto-formatted code[/dim]")
+                console.print("  [dim]Auto-formatted[/dim]")
 
-            # Detect completion scoped to current task
+            # Detect completion
             completed = _detect_completion(coding_result.final_response, self.workspace_dir, next_task.id)
 
             if completed:
+                console.print(f"  [cyan]Running QA Sentinel...[/cyan]")
                 qa_result = await self._run_qa(next_task, iteration)
 
                 if qa_result.passed:
-                    console.print(f"  [bold green]QA PASSED: {next_task.id}[/bold green]")
+                    console.print(f"  [bold green]✓ QA PASSED[/bold green] — {next_task.id}")
                     self._complete_task(prd, next_task, iteration)
                 else:
-                    console.print(f"  [yellow]QA FAILED: {'; '.join(qa_result.issues[:2])}[/yellow]")
+                    console.print(f"  [bold red]✗ QA FAILED[/bold red] — {'; '.join(qa_result.issues[:2])}")
+                    console.print(f"  [yellow]Starting Healer...[/yellow]")
                     healed = await self._run_healer_loop(next_task, qa_result, iteration)
                     if healed:
-                        console.print(f"  [green]Healer FIXED: {next_task.id}[/green]")
+                        console.print(f"  [bold green]✓ Healer FIXED[/bold green] — {next_task.id}")
                         self._complete_task(prd, next_task, iteration, "(after healing)")
                     else:
                         self._fail_task(prd, next_task, iteration, qa_result)

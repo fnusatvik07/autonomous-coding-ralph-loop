@@ -42,6 +42,5 @@ frontend/node_modules/
 htmlcov/
 .coverage
 
-# Screenshots
-*.png
-*.jpg
+# Misc
+*.tsbuildinfo

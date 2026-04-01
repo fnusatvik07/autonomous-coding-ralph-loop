@@ -55,6 +55,18 @@ class Config(BaseModel):
         description="LLM reflects on failures to learn from mistakes",
     )
 
+    # Browser testing
+    enable_puppeteer: bool = Field(
+        default=False,
+        description="Enable Puppeteer MCP for browser testing (web projects)",
+    )
+
+    # OS sandbox
+    enable_sandbox: bool = Field(
+        default=True,
+        description="Enable OS-level sandbox for bash commands when available",
+    )
+
     # Sandbox
     sandbox_enabled: bool = Field(default=False)
     sandbox_image: str = Field(default="python:3.13-slim")

@@ -100,6 +100,7 @@ def load_prd(workspace_dir: str) -> PRD:
     for t in data.get("tasks", []):
         tasks.append(Task(
             id=t["id"],
+            category=t.get("category", "functional"),
             title=t["title"],
             description=t.get("description", ""),
             acceptance_criteria=t.get("acceptance_criteria", []),
@@ -129,6 +130,7 @@ def save_prd(prd: PRD, workspace_dir: str) -> None:
         "tasks": [
             {
                 "id": t.id,
+                "category": t.category,
                 "title": t.title,
                 "description": t.description,
                 "acceptance_criteria": t.acceptance_criteria,

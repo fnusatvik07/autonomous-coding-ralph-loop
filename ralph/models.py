@@ -18,6 +18,7 @@ class Task(BaseModel):
     """A single task/user story in the PRD."""
 
     id: str
+    category: str = Field(default="functional", description="functional, validation, error_handling, style, integration, quality")
     title: str
     description: str
     acceptance_criteria: list[str] = Field(default_factory=list)

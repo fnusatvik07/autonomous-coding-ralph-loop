@@ -33,6 +33,7 @@ Write to `.ralph/prd.json` with this EXACT schema:
   "tasks": [
     {
       "id": "TASK-001",
+      "category": "functional",
       "title": "Short description of what this test verifies",
       "description": "Detailed description of the feature to implement and WHY",
       "acceptance_criteria": [
@@ -50,14 +51,31 @@ Write to `.ralph/prd.json` with this EXACT schema:
 }
 ```
 
+### TASK CATEGORIES
+
+Every task MUST have a `category` field. Use one of:
+
+- **"functional"** — Does the feature work? (API returns correct data, function computes right result, command produces expected output)
+- **"validation"** — Does it reject bad input? (empty string returns 422, negative number raises error, missing field rejected)
+- **"error_handling"** — Does it handle failures? (missing resource returns 404, server error returns 500, network timeout handled)
+- **"style"** — Does it look/feel right? (UI layout correct, colors match spec, responsive design works, accessibility)
+- **"integration"** — Do features work together? (create then read, update then verify, full workflow end-to-end)
+- **"quality"** — Is it well-built? (tests exist and pass, coverage target met, no console errors, documentation exists)
+
+A well-balanced task list should have roughly:
+- 40% functional
+- 20% validation + error_handling
+- 15% integration
+- 15% quality
+- 10% style (for web/UI projects)
+
 ### REQUIREMENTS FOR TASKS
 
-**Format:**
-- Both "functional" and "quality" categories
-- Mix of narrow tests (2-3 steps) and comprehensive tests (5-10+ steps)
-- At least 20% of tasks MUST have 5+ verification steps each
-- Order features by priority: infrastructure first, polish last
-- ALL tasks start with `"status": "pending"`
+**Step counts:**
+- Minimum 2 steps per task
+- At least 25% of tasks MUST have 5+ verification steps
+- For projects with 100+ tasks, at least 25 tasks MUST have 10+ steps
+- Complex integration tests should have 8-15 steps
 
 **Coverage — EVERY feature from the spec must have tasks for:**
 - Happy path (normal usage works)
@@ -67,21 +85,23 @@ Write to `.ralph/prd.json` with this EXACT schema:
 
 **Each task MUST have:**
 - A unique sequential ID (TASK-001, TASK-002, ...)
+- A category from the list above
 - A clear, specific title (not vague)
 - Detailed description explaining what to implement
-- 2-10 ordered acceptance_criteria (verification steps)
+- 2-15 ordered acceptance_criteria (verification steps)
 - A real, runnable test_command
 - Notes with implementation hints
 
-### CATEGORIES TO COVER
+### CATEGORIES TO COVER IN ORDER
 
-1. **Infrastructure** — project setup, dependencies, config, .gitignore
+1. **Infrastructure** — project setup, dependencies, config, .gitignore, init.sh
 2. **Core functionality** — main features, one behavior per task
 3. **Input validation** — reject bad input with proper error codes/messages
 4. **Error handling** — 404 for missing resources, 500 for server errors, edge cases
-5. **Testing** — unit tests exist, integration tests exist, all pass
-6. **Init script** — create init.sh that sets up and runs the project
-7. **Polish** — code quality, documentation, test coverage target
+5. **Integration** — features work together end-to-end
+6. **Testing** — unit tests exist, integration tests exist, all pass
+7. **Style** — UI matches spec (for web projects), CLI output formatted correctly
+8. **Polish** — code quality, documentation, test coverage target, init.sh works
 
 ### CRITICAL INSTRUCTION
 
@@ -89,14 +109,14 @@ Write to `.ralph/prd.json` with this EXACT schema:
 
 A REST API with 5 endpoints should have AT LEAST 40 tasks — not 5 or 10.
 Each endpoint needs: create works, validation rejects bad input, missing
-resource returns 404, edge cases handled, test exists. That's 8 tasks per
-endpoint minimum.
+resource returns 404, edge cases handled, test exists, integration with
+other endpoints works. That's 8+ tasks per endpoint minimum.
 
 **IT IS CATASTROPHIC TO REMOVE OR EDIT TASKS IN FUTURE SESSIONS.**
 
 Tasks can ONLY be marked as passing (change `"pending"` to `"passed"`).
-Never remove tasks, never edit descriptions, never modify verification steps.
-This ensures no functionality is missed.
+Never remove tasks, never edit descriptions, never modify verification steps,
+never change the category. This ensures no functionality is missed.
 
 ### ALSO CREATE: init.sh
 

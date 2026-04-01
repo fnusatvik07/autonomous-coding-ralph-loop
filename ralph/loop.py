@@ -75,6 +75,10 @@ def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
                 val = os.getenv(key)
                 if val:
                     env[key] = val
+        if config.enable_puppeteer:
+            env["RALPH_ENABLE_PUPPETEER"] = "1"
+        if config.enable_sandbox:
+            env["RALPH_ENABLE_SANDBOX"] = "1"
         kwargs["env"] = env
         if config.max_budget_usd > 0:
             kwargs["max_budget_usd"] = config.max_budget_usd

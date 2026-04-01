@@ -132,9 +132,26 @@ class ClaudeSDKProvider(BaseProvider):
                 }
             return {}
 
+        # Puppeteer MCP tools for browser testing (web projects)
+        puppeteer_tools = [
+            "mcp__puppeteer__puppeteer_navigate",
+            "mcp__puppeteer__puppeteer_screenshot",
+            "mcp__puppeteer__puppeteer_click",
+            "mcp__puppeteer__puppeteer_fill",
+            "mcp__puppeteer__puppeteer_select",
+            "mcp__puppeteer__puppeteer_hover",
+            "mcp__puppeteer__puppeteer_evaluate",
+        ]
+
+        builtin_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch"]
+
+        # Include Puppeteer if enabled
+        use_puppeteer = self._extra_env.get("RALPH_ENABLE_PUPPETEER", "") == "1"
+        allowed = builtin_tools + (puppeteer_tools if use_puppeteer else [])
+
         opts: dict = {
             "system_prompt": system_prompt,
-            "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch"],
+            "allowed_tools": allowed,
             "permission_mode": "acceptEdits",
             "cwd": str(self.workspace_dir),
             "add_dirs": [str(self.workspace_dir)],
@@ -143,7 +160,16 @@ class ClaudeSDKProvider(BaseProvider):
             "hooks": {
                 "PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_safety_hook])],
             },
+            # OS-level sandbox (like Anthropic's approach) when enabled
+            "sandbox": {"enabled": self._extra_env.get("RALPH_ENABLE_SANDBOX", "") == "1"},
         }
+
+        # Add Puppeteer MCP server if enabled
+        if use_puppeteer:
+            opts["mcp_servers"] = {
+                "puppeteer": {"command": "npx", "args": ["puppeteer-mcp-server"]}
+            }
+
         if self.model:
             opts["model"] = self.model
         if self._max_budget_usd > 0:

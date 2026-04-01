@@ -80,21 +80,21 @@ def sample_prd_data():
         "description": "A test project",
         "tasks": [
             {
-                "id": "TASK-001", "title": "Initialize project",
+                "id": "TASK-001", "category": "functional", "title": "Initialize project",
                 "description": "Set up project",
                 "acceptance_criteria": ["Project exists", "Tests pass"],
                 "priority": 1, "status": "pending",
                 "test_command": "pytest tests/ -v", "notes": "",
             },
             {
-                "id": "TASK-002", "title": "Add user model",
+                "id": "TASK-002", "category": "functional", "title": "Add user model",
                 "description": "Create user model",
                 "acceptance_criteria": ["User model has fields", "Tests pass"],
                 "priority": 2, "status": "pending",
                 "test_command": "pytest tests/test_models.py -v", "notes": "",
             },
             {
-                "id": "TASK-003", "title": "Add API endpoints",
+                "id": "TASK-003", "category": "integration", "title": "Add API endpoints",
                 "description": "CRUD endpoints",
                 "acceptance_criteria": ["GET /users works", "Tests pass"],
                 "priority": 3, "status": "pending",

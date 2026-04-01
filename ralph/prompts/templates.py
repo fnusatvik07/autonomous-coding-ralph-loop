@@ -22,7 +22,6 @@ def _load(name: str) -> str:
 # System prompts (loaded from markdown files)
 SPEC_SYSTEM_PROMPT = _load("spec_system")
 PRD_SYSTEM_PROMPT = _load("prd_system")
-INITIALIZER_PROMPT = _load("initializer")
 CODING_SYSTEM_PROMPT = _load("coding")
 QA_SYSTEM_PROMPT = _load("qa_system")
 HEALER_SYSTEM_PROMPT = _load("healer")

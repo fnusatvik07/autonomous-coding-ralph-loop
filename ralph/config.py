@@ -61,15 +61,12 @@ class Config(BaseModel):
         description="Enable Puppeteer MCP for browser testing (web projects)",
     )
 
-    # OS sandbox
+    # OS sandbox (requires Docker or macOS sandbox support)
     enable_sandbox: bool = Field(
-        default=True,
-        description="Enable OS-level sandbox for bash commands when available",
+        default=False,
+        description="Enable OS-level sandbox for bash commands (requires Docker)",
     )
 
-    # Sandbox
-    sandbox_enabled: bool = Field(default=False)
-    sandbox_image: str = Field(default="python:3.13-slim")
 
     @field_validator("provider")
     @classmethod

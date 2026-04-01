@@ -160,9 +160,15 @@ class ClaudeSDKProvider(BaseProvider):
             "hooks": {
                 "PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_safety_hook])],
             },
-            # OS-level sandbox (like Anthropic's approach) when enabled
-            "sandbox": {"enabled": self._extra_env.get("RALPH_ENABLE_SANDBOX", "") == "1"},
         }
+
+        # OS sandbox — only add if explicitly enabled (requires Docker)
+        # When disabled, bash commands still go through the PreToolUse security hook
+        if self._extra_env.get("RALPH_ENABLE_SANDBOX", "") == "1":
+            opts["sandbox"] = {
+                "enabled": True,
+                "autoAllowBashIfSandboxed": True,  # Allow bash in sandbox (security hook still validates)
+            }
 
         # Add Puppeteer MCP server if enabled
         if use_puppeteer:

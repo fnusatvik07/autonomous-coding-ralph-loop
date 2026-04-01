@@ -13,6 +13,8 @@ class TestLoadPRD:
         assert len(prd.tasks) == 3
         assert prd.tasks[0].id == "TASK-001"
         assert prd.tasks[0].status == TaskStatus.PENDING
+        assert prd.tasks[0].category == "functional"
+        assert prd.tasks[2].category == "integration"
         assert len(prd.tasks[0].acceptance_criteria) == 2
 
     def test_load_missing_prd_raises(self, workspace):
@@ -34,12 +36,12 @@ class TestSavePRD:
             description="Testing save/load",
             tasks=[
                 Task(
-                    id="T-1", title="Task One", description="d",
+                    id="T-1", category="validation", title="Task One", description="d",
                     priority=1, acceptance_criteria=["it works"],
                     test_command="pytest -v",
                 ),
                 Task(
-                    id="T-2", title="Task Two", description="d",
+                    id="T-2", category="quality", title="Task Two", description="d",
                     priority=2, status=TaskStatus.PASSED,
                 ),
             ],
@@ -52,6 +54,8 @@ class TestSavePRD:
         assert loaded.branch_name == "ralph/roundtrip"
         assert len(loaded.tasks) == 2
         assert loaded.tasks[0].acceptance_criteria == ["it works"]
+        assert loaded.tasks[0].category == "validation"
+        assert loaded.tasks[1].category == "quality"
         assert loaded.tasks[1].status == TaskStatus.PASSED
 
     def test_save_creates_ralph_dir(self, workspace):

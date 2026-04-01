@@ -45,7 +45,7 @@ async def generate_spec(
         result = await provider.run_session(
             system_prompt=SPEC_SYSTEM_PROMPT,
             user_message=SPEC_USER_TEMPLATE.format(task_description=task_description),
-            max_turns=30,
+            max_turns=50,
             on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
         )
 
@@ -67,7 +67,7 @@ async def generate_spec(
         result = await provider.run_session(
             system_prompt=PRD_SYSTEM_PROMPT,
             user_message=PRD_USER_TEMPLATE,
-            max_turns=20,
+            max_turns=100,  # Large — generating 50-200 tasks needs many tool calls
             on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
         )
 

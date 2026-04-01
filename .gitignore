@@ -32,7 +32,16 @@ Thumbs.db
 # Ralph workspace state (tracked per-project, not here)
 .ralph/
 
+# Node
+node_modules/
+frontend/node_modules/
+*.tsbuildinfo
+
 # Testing
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Screenshots
+*.png
+*.jpg

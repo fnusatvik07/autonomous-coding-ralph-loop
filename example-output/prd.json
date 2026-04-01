@@ -1,0 +1,153 @@
+{
+  "project_name": "todo-api",
+  "branch_name": "main",
+  "description": "A FastAPI REST API for managing todo items with SQLite persistence and basic auth",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "Project scaffolding",
+      "description": "Create pyproject.toml with fastapi, uvicorn, pydantic, pytest as dependencies. Create app/ directory with __init__.py. Create a main.py that starts FastAPI app.",
+      "acceptance_criteria": [
+        "pyproject.toml exists with fastapi dependency",
+        "app/__init__.py exists",
+        "app/main.py exists with FastAPI() instance"
+      ],
+      "priority": 1,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.main import app; print(type(app))\"",
+      "notes": "Use SQLite, no external DB needed."
+    },
+    {
+      "id": "TASK-002",
+      "title": "Todo data model",
+      "description": "Create app/models.py with a Pydantic model for Todo items: id (int), title (str), completed (bool, default False), created_at (datetime).",
+      "acceptance_criteria": [
+        "app/models.py exists",
+        "TodoCreate and TodoResponse models defined",
+        "Models have proper type annotations"
+      ],
+      "priority": 2,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.models import TodoCreate, TodoResponse; t = TodoCreate(title='test'); print(t.title)\"",
+      "notes": ""
+    },
+    {
+      "id": "TASK-003",
+      "title": "SQLite database layer",
+      "description": "Create app/database.py with functions: init_db(), get_all_todos(), get_todo(id), create_todo(todo), update_todo(id, todo), delete_todo(id). Use sqlite3 directly (no ORM).",
+      "acceptance_criteria": [
+        "app/database.py exists",
+        "init_db() creates todos table",
+        "CRUD functions work with SQLite"
+      ],
+      "priority": 3,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.database import init_db; init_db(); print('DB initialized')\"",
+      "notes": "Store DB at ./todos.db"
+    },
+    {
+      "id": "TASK-004",
+      "title": "CRUD API endpoints",
+      "description": "Add endpoints to app/main.py: GET /todos, GET /todos/{id}, POST /todos, PUT /todos/{id}, DELETE /todos/{id}. Call init_db() on startup.",
+      "acceptance_criteria": [
+        "GET /todos returns list",
+        "POST /todos creates a todo",
+        "GET /todos/{id} returns single todo",
+        "PUT /todos/{id} updates a todo",
+        "DELETE /todos/{id} deletes a todo"
+      ],
+      "priority": 4,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.main import app; from fastapi.testclient import TestClient; c=TestClient(app); r=c.get('/todos'); assert r.status_code==200; print('OK')\"",
+      "notes": ""
+    },
+    {
+      "id": "TASK-005",
+      "title": "Input validation",
+      "description": "Add validation: title must be 1-200 chars, reject empty titles, return 422 for invalid input with clear error messages.",
+      "acceptance_criteria": [
+        "POST with empty title returns 422",
+        "POST with title >200 chars returns 422",
+        "Error response includes detail field"
+      ],
+      "priority": 5,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.main import app; from fastapi.testclient import TestClient; c=TestClient(app); r=c.post('/todos',json={'title':''}); assert r.status_code==422; print('OK')\"",
+      "notes": ""
+    },
+    {
+      "id": "TASK-006",
+      "title": "Error handling for missing resources",
+      "description": "Return 404 with {'detail': 'Todo not found'} when GET/PUT/DELETE a non-existent todo ID.",
+      "acceptance_criteria": [
+        "GET /todos/99999 returns 404",
+        "PUT /todos/99999 returns 404",
+        "DELETE /todos/99999 returns 404",
+        "Response body has 'detail' field"
+      ],
+      "priority": 6,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.main import app; from fastapi.testclient import TestClient; c=TestClient(app); r=c.get('/todos/99999'); assert r.status_code==404; print('OK')\"",
+      "notes": ""
+    },
+    {
+      "id": "TASK-007",
+      "title": "Unit tests for database layer",
+      "description": "Create tests/test_database.py with pytest tests for all database functions. Use a temporary DB file for isolation.",
+      "acceptance_criteria": [
+        "tests/test_database.py exists",
+        "Tests cover create, read, update, delete",
+        "At least 6 test cases",
+        "All tests pass"
+      ],
+      "priority": 7,
+      "status": "passed",
+      "test_command": "python3 -m pytest tests/test_database.py -v",
+      "notes": "Use tmp_path fixture for DB isolation."
+    },
+    {
+      "id": "TASK-008",
+      "title": "Integration tests for API endpoints",
+      "description": "Create tests/test_api.py with pytest tests using FastAPI's TestClient. Test all CRUD endpoints, validation, and error handling.",
+      "acceptance_criteria": [
+        "tests/test_api.py exists",
+        "Tests cover all 5 CRUD endpoints",
+        "Tests cover 422 and 404 error cases",
+        "At least 8 test cases",
+        "All tests pass"
+      ],
+      "priority": 8,
+      "status": "passed",
+      "test_command": "python3 -m pytest tests/test_api.py -v",
+      "notes": ""
+    },
+    {
+      "id": "TASK-009",
+      "title": "Health check endpoint",
+      "description": "Add GET /health that returns {'status': 'healthy', 'todos_count': N} where N is the number of todos in the database.",
+      "acceptance_criteria": [
+        "GET /health returns 200",
+        "Response has status and todos_count fields",
+        "todos_count reflects actual DB count"
+      ],
+      "priority": 9,
+      "status": "passed",
+      "test_command": "python3 -c \"from app.main import app; from fastapi.testclient import TestClient; c=TestClient(app); r=c.get('/health'); assert r.status_code==200; assert 'status' in r.json(); print('OK')\"",
+      "notes": ""
+    },
+    {
+      "id": "TASK-010",
+      "title": "Full test suite passes",
+      "description": "Run the entire test suite. Fix any broken tests. Ensure all tests pass. Add a test for the health endpoint.",
+      "acceptance_criteria": [
+        "pytest runs with 0 failures",
+        "At least 15 total test cases",
+        "Health endpoint has a test"
+      ],
+      "priority": 10,
+      "status": "passed",
+      "test_command": "python3 -m pytest tests/ -v",
+      "notes": ""
+    }
+  ]
+}

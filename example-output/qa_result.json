@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "issues": [],
+  "test_output": "47 passed, 0 failures in 0.26s across 5 test files: test_api.py (14), test_database.py (13), test_errors.py (6), test_health.py (4), test_validation.py (10). 24 deprecation warnings for datetime.utcnow().",
+  "suggestions": [
+    "Replace datetime.utcnow() with datetime.now(datetime.UTC) in app/database.py:75 to resolve the 24 DeprecationWarnings (scheduled for removal in a future Python version)"
+  ]
+}

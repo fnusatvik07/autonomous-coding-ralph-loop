@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]" --system
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Check imports
+        run: |
+          python -c "
+          from ralph.config import Config
+          from ralph.loop import RalphLoop
+          from ralph.providers import PROVIDERS
+          from ralph.routing import classify_task
+          from ralph.reflexion import init_reflections
+          from ralph.checkpoint import create_checkpoint
+          from ralph.observability import get_session_analytics
+          print('All imports OK')
+          print(f'Providers: {list(PROVIDERS.keys())}')
+          "
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install ruff
+        run: uv pip install ruff --system
+      - name: Ruff check
+        run: ruff check ralph/ tests/ --select E,F,I --ignore E501
+      - name: Ruff format check
+        run: ruff format --check ralph/ tests/ || true

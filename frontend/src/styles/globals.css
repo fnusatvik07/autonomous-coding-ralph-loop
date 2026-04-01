@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Light theme (default) */
+  :root {
+    --surface-0: #ffffff;
+    --surface-1: #f8fafc;
+    --surface-2: #f1f5f9;
+    --border: #e2e8f0;
+    --foreground: #0f172a;
+    --muted: #64748b;
+    --accent: #2563eb;
+    --code-bg: #f8fafc;
+    --terminal-bg: #1e293b;
+    --terminal-text: #e2e8f0;
+  }
+
+  /* Dark theme */
+  .dark {
+    --surface-0: #0f172a;
+    --surface-1: #1e293b;
+    --surface-2: #334155;
+    --border: #334155;
+    --foreground: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #3b82f6;
+    --code-bg: #1e293b;
+    --terminal-bg: #0c1222;
+    --terminal-text: #e2e8f0;
+  }
+
+  body {
+    background: var(--surface-0);
+    color: var(--foreground);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+/* Terminal */
+.terminal {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Pulse */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.animate-pulse-slow { animation: pulse-slow 2s ease-in-out infinite; }
+
+/* Markdown in spec viewer */
+.md-spec h1 { @apply text-2xl font-bold mt-8 mb-3 text-foreground; }
+.md-spec h2 { @apply text-xl font-semibold mt-6 mb-2 text-foreground; }
+.md-spec h3 { @apply text-lg font-semibold mt-5 mb-2 text-foreground; }
+.md-spec p { @apply my-2.5 leading-relaxed text-muted; }
+.md-spec ul, .md-spec ol { @apply my-2 pl-5 text-muted; }
+.md-spec li { @apply my-1.5 leading-relaxed; }
+.md-spec strong { @apply text-foreground font-semibold; }
+.md-spec code {
+  @apply text-sm font-mono px-1.5 py-0.5 rounded;
+  background: var(--code-bg);
+}
+.md-spec pre {
+  @apply p-4 rounded-xl overflow-x-auto my-4 text-sm;
+  background: var(--code-bg);
+}
+.md-spec pre code { @apply bg-transparent p-0; }
+.md-spec table { @apply w-full border-collapse my-4 text-sm; }
+.md-spec th { @apply text-left font-semibold p-3 bg-surface-1; }
+.md-spec td { @apply p-3 border-t; }
+.md-spec hr { @apply my-6; }
+.md-spec blockquote {
+  @apply border-l-4 border-accent pl-4 my-4 italic text-muted;
+}

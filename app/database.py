@@ -3,7 +3,16 @@ import os
 import sqlite3
 from typing import Generator
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "todos.db")
+DEFAULT_DATABASE_URL = "todos.db"
+
+
+def _get_database_url() -> str:
+    """Return the current database URL from the environment."""
+    return os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+
+
+# Keep module-level alias for backward compatibility
+DATABASE_URL = _get_database_url()
 
 
 def init_db(db_path: str | None = None) -> None:
@@ -13,7 +22,7 @@ def init_db(db_path: str | None = None) -> None:
         db_path: Optional path to the SQLite database file.
                  Defaults to DATABASE_URL env var or 'todos.db'.
     """
-    path = db_path or DATABASE_URL
+    path = db_path or _get_database_url()
     conn = sqlite3.connect(path)
     try:
         conn.execute(
@@ -44,7 +53,7 @@ def get_db(db_path: str | None = None) -> Generator[sqlite3.Connection, None, No
     Yields:
         sqlite3.Connection with row_factory set to sqlite3.Row.
     """
-    path = db_path or DATABASE_URL
+    path = db_path or _get_database_url()
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:

@@ -3,12 +3,45 @@ from datetime import datetime, timezone
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, status
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.database import get_db
 from app.models import TodoCreate, TodoResponse
 
 router = APIRouter()
+
+
+@router.get("/todos", response_model=List[TodoResponse])
+def list_todos(db: sqlite3.Connection = Depends(get_db)) -> List[TodoResponse]:
+    """List all todo items, newest first."""
+    rows = db.execute("SELECT * FROM todos ORDER BY created_at DESC").fetchall()
+    return [
+        TodoResponse(
+            id=row["id"],
+            title=row["title"],
+            completed=bool(row["completed"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/todos/{todo_id}", response_model=TodoResponse)
+def get_todo(todo_id: int, db: sqlite3.Connection = Depends(get_db)) -> TodoResponse:
+    """Get a single todo item by ID. Returns 404 if not found."""
+    row = db.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return TodoResponse(
+        id=row["id"],
+        title=row["title"],
+        completed=bool(row["completed"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 @router.post("/todos", response_model=TodoResponse, status_code=status.HTTP_201_CREATED)

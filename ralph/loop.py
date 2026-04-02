@@ -201,6 +201,8 @@ class RalphLoop:
         _on_tool(name, tool_input)
 
     async def run(self, task_description: str) -> None:
+        # Create workspace + .ralph directory (parents=True handles new workspaces)
+        Path(self.workspace_dir).mkdir(parents=True, exist_ok=True)
         ralph_dir = Path(self.workspace_dir) / RALPH_DIR
         ralph_dir.mkdir(exist_ok=True)
 

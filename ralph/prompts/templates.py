@@ -47,14 +47,13 @@ a detailed spec, or a pasted document. Regardless of how detailed or vague it is
 PRD_USER_TEMPLATE = """\
 Read the approved spec at `.ralph/spec.md` and convert it into a task list.
 
-Write the JSON to `.ralph/prd.json` using the Write tool.
-If the Write tool fails or the file is too large, output the COMPLETE JSON
-in your response text inside a ```json code block so it can be extracted.
+IMPORTANT: Output the COMPLETE prd.json content inside a ```json code block
+in your response. Do NOT use the Write tool for prd.json — just output it
+as text and the system will save it automatically.
 
-Scale tasks to project complexity (20-200 test cases).
-Each task = one testable behavior. Be granular.
+Scale tasks to project complexity. Each task = one testable behavior.
 Order by dependency: infrastructure, core, validation, errors, tests, polish.
-Also create init.sh in the workspace root.
+Also create init.sh in the workspace root using the Write tool.
 """
 
 CODING_USER_TEMPLATE = """\

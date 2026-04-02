@@ -201,23 +201,19 @@ class RalphLoop:
         _on_tool(name, tool_input)
 
     async def run(self, task_description: str) -> None:
-        # Workspace must exist — Ralph works INSIDE an existing directory
+        # Workspace = directory where code lives
         ws = Path(self.workspace_dir)
-        if not ws.exists():
-            # Create only if it's a subdirectory of cwd (not arbitrary paths)
-            if str(ws.resolve()).startswith(str(Path.cwd().resolve())):
-                ws.mkdir(parents=True, exist_ok=True)
-            else:
-                raise FileNotFoundError(
-                    f"Workspace '{ws}' does not exist. Create it first or use -w . to work in current directory."
-                )
-        ralph_dir = ws / RALPH_DIR
-        ralph_dir.mkdir(exist_ok=True)
+        ws.mkdir(parents=True, exist_ok=True)
 
-        # Create session directory: .ralph/sessions/ralph_<uuid>/
-        session_dir = ralph_dir / "sessions" / f"ralph_{self.run_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
+        # Run directory: .ralph/runs/ralph_<uuid>/
+        ralph_root = ws / RALPH_DIR
+        ralph_root.mkdir(exist_ok=True)
+        run_dir = ralph_root / "runs" / f"ralph_{self.run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.run_dir = str(run_dir)
 
+        # State files go in .ralph/ (shared) for agent access
+        # Run directory stores copies for tracking
         setup_logging(self.workspace_dir)
         init_progress(self.workspace_dir)
         init_guardrails(self.workspace_dir)
@@ -231,14 +227,16 @@ class RalphLoop:
         console.print("[dim]  Generating application spec and breaking it into testable tasks...[/dim]")
         console.print()
 
+        # Generate spec + PRD into run directory, copy to .ralph/ root for agent access
         prd = await self._ensure_prd(task_description)
 
-        # Copy spec + prd to session directory for tracking
+        # Copy spec + prd to run directory for tracking
+        import shutil
         for fname in ("spec.md", "prd.json"):
-            src = ralph_dir / fname
-            if src.exists():
-                import shutil
-                shutil.copy2(src, session_dir / fname)
+            src = Path(self.workspace_dir) / RALPH_DIR / fname
+            dst = Path(self.run_dir) / fname
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
 
         # ── Step 2: Review (if enabled) ──
         if self.config.approve_spec and not self._prd_previously_approved():

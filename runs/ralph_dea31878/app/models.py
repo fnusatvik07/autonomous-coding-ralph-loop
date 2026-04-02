@@ -6,7 +6,7 @@ class TodoCreate(BaseModel):
     """Schema for creating a new todo item."""
 
     title: str = Field(..., min_length=1, max_length=200)
-    completed: bool = False
+    completed: bool = Field(default=False, strict=True)
 
     @field_validator("title")
     @classmethod
@@ -22,7 +22,7 @@ class TodoUpdate(BaseModel):
     """Schema for updating an existing todo item."""
 
     title: str | None = Field(None, min_length=1, max_length=200)
-    completed: bool | None = None
+    completed: bool | None = Field(default=None, strict=True)
 
     @field_validator("title")
     @classmethod

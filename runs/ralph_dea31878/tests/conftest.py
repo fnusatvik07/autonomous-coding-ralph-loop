@@ -73,10 +73,7 @@ def client_with_memory_db(memory_db):
     database state.
     """
     def override_get_db():
-        try:
-            yield memory_db
-        except Exception:
-            pass
+        yield memory_db
 
     app.dependency_overrides[get_db] = override_get_db
 

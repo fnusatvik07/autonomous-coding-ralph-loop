@@ -50,21 +50,21 @@ Otherwise, check if any servers need to be started and start them.
 **MANDATORY BEFORE NEW WORK:**
 
 Previous sessions may have introduced bugs. Before implementing anything
-new, you MUST verify existing work.
+new, you MUST run actual tests to verify existing work.
 
-Run 1-2 of the tasks marked as "passed" that are most core to the
-application to verify they still work. If this is a web app, test that
-the app starts and basic functionality works.
+**For backend/API projects:**
+```bash
+# Run the full test suite
+python -m pytest tests/ -v --tb=short
+```
 
-**If you find ANY issues (functional or visual):**
-- Mark that task as "pending" immediately
-- Fix all issues BEFORE moving to new features
-- This includes:
-  * Test failures
-  * Import errors
-  * Broken functionality
-  * Console errors
-  * Missing dependencies
+**For web/frontend projects:**
+- Start the dev server
+- Verify the app loads in the browser
+- Check for console errors
+
+**If ANY test fails:** Fix it BEFORE moving to new features.
+Regressions take absolute priority.
 
 ### STEP 4: CHOOSE ONE FEATURE
 
@@ -82,20 +82,61 @@ Write the code needed to make this feature's acceptance criteria pass.
 
 ### STEP 6: WRITE TESTS
 
-Write tests for your implementation. Every feature needs automated tests.
-Don't skip this step. Tests are how future sessions verify your work.
+Write automated tests for your implementation. This is NOT optional.
+
+**For backend/API projects:**
+```python
+# Use pytest + FastAPI TestClient (or equivalent)
+from fastapi.testclient import TestClient
+from app.main import app
+
+def test_create_item():
+    client = TestClient(app)
+    response = client.post("/items", json={"name": "test"})
+    assert response.status_code == 201
+    assert response.json()["name"] == "test"
+```
+
+**For libraries/CLI tools:**
+```python
+# Unit tests with pytest
+def test_function():
+    result = my_function(input)
+    assert result == expected
+```
+
+Tests must:
+- Cover the happy path
+- Cover error cases (bad input, missing resource)
+- Be runnable with `pytest` (or the project's test command)
+- Pass consistently (no flaky tests)
 
 ### STEP 7: VERIFY THOROUGHLY
 
-**CRITICAL:** You MUST verify through actual testing, not just reading code.
+**CRITICAL:** You MUST verify by ACTUALLY RUNNING the tests, not just
+reading the code and assuming it works.
 
-1. Execute the `test_command` from the task
-2. Walk through EACH `acceptance_criteria` step manually
-3. If anything fails, fix it and re-verify from scratch
-4. Run the FULL test suite — ALL existing tests must still pass
-5. Check for console errors, import errors, or warnings
+**Do this in order:**
 
-**ONLY proceed to Step 8 after ALL verification passes.**
+1. Run the task's specific `test_command`:
+```bash
+# Whatever the test_command says in prd.json
+python -m pytest tests/test_books.py -v
+```
+
+2. Walk through EACH `acceptance_criteria` step:
+   - If it says "POST /books returns 201" → actually test it
+   - If it says "empty title returns 422" → actually test it
+   - If it says "pytest passes" → actually run pytest
+
+3. Run the FULL test suite to check for regressions:
+```bash
+python -m pytest tests/ -v --tb=short
+```
+
+4. Fix anything that fails, then re-verify from scratch.
+
+**ONLY proceed to Step 8 after ALL tests pass.**
 
 ### STEP 8: UPDATE prd.json (CAREFULLY!)
 
@@ -104,7 +145,7 @@ Don't skip this step. Tests are how future sessions verify your work.
 After thorough verification, you may change ONE field:
 `"status": "pending"` → `"status": "passed"`
 
-**ONLY CHANGE THE STATUS FIELD AFTER FULL VERIFICATION.**
+**ONLY CHANGE THE STATUS FIELD AFTER RUNNING ALL TESTS.**
 
 **NEVER:**
 - Remove tasks
@@ -124,8 +165,8 @@ git add <specific files — NOT .ralph/ or .env>
 git commit -m "feat: TASK-XXX - description
 
 - Added [specific changes]
-- Tested: [how it was verified]
-- Status: TASK-XXX marked as passed"
+- Tests: [X tests pass, including Y new]
+- Verified: all acceptance criteria met"
 ```
 
 Do NOT use `git add -A` or `git add .` — these stage .ralph/ and .env files.
@@ -136,10 +177,11 @@ Always explicitly list the files you're committing.
 Append to `.ralph/progress.md`:
 - What you accomplished this session
 - Which task(s) you completed
+- Test results (how many pass now)
 - Any issues discovered or fixed
 - Any patterns or learnings for future sessions
 - What should be worked on next
-- Current status (e.g., "45/80 tasks passing")
+- Current status (e.g., "15/90 tasks passing, all tests green")
 
 Then signal completion:
 <ralph:task_complete>TASK-XXX</ralph:task_complete>
@@ -159,18 +201,19 @@ It's ok if you only complete one — quality over quantity.
 **Priority Order:**
 1. Fix any broken/regressed tests (ALWAYS first)
 2. Complete the highest-priority pending task
-3. Never skip testing or verification
+3. Never skip writing or running tests
 
 **Quality Bar:**
-- Zero test failures
-- All acceptance criteria verified (not just assumed)
+- Zero test failures (pytest must show 0 failed)
+- All acceptance criteria verified by actually running tests
 - Clean code following existing patterns
 - Proper error handling for all edge cases
 - No hardcoded values or secrets
-- No console errors or warnings
+- No import errors or warnings
 
 **You have unlimited time.** Take as long as needed to get it right.
-The most important thing is leaving the codebase in a clean state.
+The most important thing is leaving the codebase in a clean state
+with all tests passing.
 
 Use modern Python: `datetime.now(datetime.UTC)` not `datetime.utcnow()`.
 Create `.gitignore` on first task if it doesn't exist.

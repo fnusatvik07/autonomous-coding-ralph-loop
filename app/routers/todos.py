@@ -5,7 +5,9 @@ import sqlite3
 
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.database import get_db
 from app.models import TodoCreate, TodoUpdate, TodoResponse
@@ -13,10 +15,48 @@ from app.models import TodoCreate, TodoUpdate, TodoResponse
 router = APIRouter()
 
 
+ALLOWED_SORT_FIELDS = {"title", "created_at"}
+ALLOWED_ORDER = {"asc", "desc"}
+
+
 @router.get("/todos", response_model=List[TodoResponse])
-def list_todos(db: sqlite3.Connection = Depends(get_db)) -> List[TodoResponse]:
-    """List all todo items, newest first."""
-    rows = db.execute("SELECT * FROM todos ORDER BY created_at DESC").fetchall()
+def list_todos(
+    completed: Optional[bool] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = Query(default=None),
+    order: Optional[str] = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: sqlite3.Connection = Depends(get_db),
+) -> List[TodoResponse]:
+    """List todo items with optional filtering, sorting, and pagination."""
+    query = "SELECT * FROM todos"
+    params: list = []
+    conditions: list[str] = []
+
+    # Filter by completed status
+    if completed is not None:
+        conditions.append("completed = ?")
+        params.append(int(completed))
+
+    # Search by case-insensitive substring match on title
+    if search is not None:
+        conditions.append("title LIKE ?")
+        params.append(f"%{search}%")
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    # Sorting
+    sort_field = sort if sort in ALLOWED_SORT_FIELDS else "created_at"
+    sort_order = order if order in ALLOWED_ORDER else "desc"
+    query += f" ORDER BY {sort_field} {sort_order.upper()}"
+
+    # Pagination
+    query += " LIMIT ? OFFSET ?"
+    params.extend([limit, skip])
+
+    rows = db.execute(query, params).fetchall()
     return [
         TodoResponse(
             id=row["id"],

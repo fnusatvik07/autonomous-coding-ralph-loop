@@ -26,7 +26,7 @@ from rich.table import Table
 
 from ralph.config import Config
 from ralph.memory.guardrails import add_guardrail, init_guardrails
-from ralph.memory.progress import append_progress, init_progress
+from ralph.memory.progress import append_progress, init_progress, update_project_state, update_codebase_patterns
 from ralph.models import AgentResult, PRD, QAResult, TaskStatus
 from ralph.observability import (
     generate_run_id, log_qa, log_session,
@@ -35,14 +35,16 @@ from ralph.observability import (
 from ralph.checkpoint import cleanup_checkpoints, create_checkpoint, rollback_to_checkpoint
 from ralph.formatting import auto_format
 from ralph.indexer import index_codebase
-from ralph.github_pr import create_pull_request, generate_pr_body, is_gh_available
-from ralph.prompts.templates import CODING_SYSTEM_PROMPT, CODING_USER_TEMPLATE
+from ralph.learning import maybe_aggregate_learnings
+from ralph.prompts.templates import CODING_SYSTEM_PROMPT, CODING_USER_TEMPLATE, FEATURE_CODING_USER_TEMPLATE
+from ralph.shipper import ship as shipper_ship
 from ralph.providers import create_provider
 from ralph.providers.base import BaseProvider
 from ralph.qa.healer import run_healer
+from ralph.qa.reviewer import run_reviewer
 from ralph.qa.sentinel import run_sentinel
 from ralph.reflexion import get_reflections, init_reflections, reflect_on_failure
-from ralph.routing import get_model_for_phase, get_model_for_task
+from ralph.routing import get_model_for_phase, get_model_for_task, should_review_feature
 from ralph.spec.generator import generate_spec, load_prd, save_prd
 
 console = Console()
@@ -50,6 +52,9 @@ logger = logging.getLogger("ralph")
 
 INTER_ITERATION_DELAY = 3
 RALPH_DIR = ".ralph"
+MAX_FIXER_ATTEMPTS = 3  # Phase 2: max fix attempts before marking BLOCKED
+WIND_DOWN_TOOL_CALLS = 150  # Phase 2: signal wind-down at this many tool calls
+WIND_DOWN_DURATION_S = 300  # Phase 2: signal wind-down at 5 min
 
 
 def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
@@ -85,14 +90,13 @@ def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
     return create_provider(config.provider, **kwargs)
 
 
-def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float, task) -> None:
+def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float, feature) -> None:
     """Print a rich iteration header with progress bar."""
     completed = len(prd.completed_tasks)
     total = len(prd.tasks)
     failed = total - completed - len(prd.pending_tasks)
     pct = prd.progress_pct
 
-    # Progress bar
     bar_width = 30
     filled = int(bar_width * pct / 100)
     bar = f"[green]{'█' * filled}[/green][dim]{'░' * (bar_width - filled)}[/dim]"
@@ -107,9 +111,11 @@ def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float
         f"  │  [dim]${cost:.2f}[/dim]"
     )
     console.print(
-        f"  [bold]► {task.id}[/bold]: {task.title}"
-        f"  [dim]({task.category} │ {task.complexity} │ {len(task.acceptance_criteria)} criteria)[/dim]"
+        f"  [bold]► {feature.id}[/bold]: {feature.title}"
+        f"  [dim]({len(feature.pending_tasks)} tasks │ {feature.max_complexity})[/dim]"
     )
+    for t in feature.pending_tasks:
+        console.print(f"    {t.id}: {t.title} [dim]({t.complexity})[/dim]")
     console.print(f"[bold]{'─' * 70}[/bold]")
 
 
@@ -131,13 +137,9 @@ def _detect_completion(response: str, workspace_dir: str, current_task_id: str) 
     Scoped to current_task_id to prevent stale ID false positives.
     """
     # Signal 1: Explicit XML marker
-    match = re.search(r"<ralph:task_complete>(.*?)</ralph:task_complete>", response)
-    if match:
+    for match in re.finditer(r"<ralph:task_complete>(.*?)</ralph:task_complete>", response):
         detected_id = match.group(1).strip()
         if detected_id == current_task_id:
-            return True
-        # Accept if it's close (e.g., agent wrote task ID without prefix)
-        if current_task_id.endswith(detected_id) or detected_id.endswith(current_task_id):
             return True
 
     # Signal 2: Agent updated prd.json - check if THIS task is now passed
@@ -166,6 +168,58 @@ def _detect_completion(response: str, workspace_dir: str, current_task_id: str) 
     return False
 
 
+def _extract_session_summary(response: str, task_id: str) -> dict:
+    """Extract structured summary from the agent's response for progress.md.
+
+    Returns dict with: notes, files_changed, test_results, patterns.
+    This is what the NEXT agent reads to understand what happened.
+    """
+    lines = response.split("\n")
+    result = {"notes": "", "files_changed": [], "test_results": "", "patterns": []}
+
+    # Extract file paths mentioned in response
+    _EXT = (".py", ".js", ".ts", ".json", ".toml", ".yaml", ".yml", ".md",
+            ".html", ".css", ".sql", ".sh", ".cfg", ".txt")
+    files_touched = set()
+    for line in lines:
+        for word in line.split():
+            word = word.strip("`,'\"|()[]{}:")
+            if "/" in word or (("." in word) and any(word.endswith(ext) for ext in _EXT)):
+                # Filter out obvious non-files
+                if not word.startswith("http") and len(word) < 100:
+                    clean = word.lstrip("./")
+                    if clean and "." in clean:
+                        files_touched.add(clean)
+
+    result["files_changed"] = sorted(files_touched)[:15]
+
+    # Extract test results
+    for line in lines:
+        line_s = line.strip()
+        if ("passed" in line_s.lower() or "failed" in line_s.lower()) and \
+           ("test" in line_s.lower() or "pytest" in line_s.lower()):
+            result["test_results"] = line_s[:150]
+            break
+
+    # Extract context around the task_complete marker
+    marker = f"<ralph:task_complete>{task_id}</ralph:task_complete>"
+    idx = response.find(marker)
+    if idx > 0:
+        before = response[max(0, idx - 500):idx].strip()
+        sentences = [s.strip() for s in before.replace("\n", ". ").split(". ") if len(s.strip()) > 10]
+        if sentences:
+            result["notes"] = ". ".join(sentences[-3:])[:300]
+
+    # Extract patterns (lines that look like learnings/conventions)
+    for line in lines:
+        line_s = line.strip()
+        if any(kw in line_s.lower() for kw in ["pattern:", "convention:", "note:", "important:",
+                                                  "learned:", "discovered:"]):
+            result["patterns"].append(line_s[:150])
+
+    return result
+
+
 def _detect_blocked(response: str) -> str | None:
     match = re.search(r"<ralph:task_blocked>(.*?)</ralph:task_blocked>", response)
     if match:
@@ -191,6 +245,7 @@ class RalphLoop:
         self.cumulative_cost = 0.0
         self.run_id = generate_run_id()
         self._incomplete_counts: dict[str, int] = {}
+        self._prev_feature_had_issues = False  # Smart gate: escalate if previous feature failed
 
     def on_text(self, text: str) -> None:
         """Text streaming callback. Override in WebRalphLoop for WS events."""
@@ -278,9 +333,17 @@ class RalphLoop:
             console.print("\n[yellow]Interrupted. Progress saved.[/yellow]")
             logger.info("interrupted: run=%s cost=$%.4f", self.run_id, self.cumulative_cost)
 
+    _stop_requested: bool = False
+
+    def request_stop(self) -> None:
+        """Request graceful stop (used by WebRalphLoop)."""
+        self._stop_requested = True
+
     async def _main_loop(self, prd: PRD) -> None:
         for iteration in range(1, self.config.max_iterations + 1):
-            # Budget check
+            if self._stop_requested:
+                console.print("[yellow]Stop requested. Saving progress.[/yellow]")
+                break
             if self._budget_exceeded():
                 break
 
@@ -290,12 +353,11 @@ class RalphLoop:
                 console.print(f"[red]PRD error: {e}[/red]")
                 break
 
-            next_task = prd.get_next_task()
-            if not next_task:
+            feature = prd.get_next_feature()
+            if not feature:
                 cleanup_checkpoints(self.workspace_dir)
-                await self._maybe_create_pr(prd, iteration - 1)
+                await self._ship(prd)
                 completed = len(prd.completed_tasks)
-                total = len(prd.tasks)
                 console.print()
                 console.print(f"[bold green]{'═' * 70}[/bold green]")
                 console.print(f"  [bold green]ALL {completed} TASKS COMPLETE![/bold green]")
@@ -305,27 +367,28 @@ class RalphLoop:
                              self.run_id, iteration - 1, self.cumulative_cost)
                 return
 
-            _print_iteration_header(prd, iteration, self.config.max_iterations, self.cumulative_cost, next_task)
-            logger.info("iteration %d: %s - %s", iteration, next_task.id, next_task.title)
+            pending_tasks = feature.pending_tasks
+            _print_iteration_header(prd, iteration, self.config.max_iterations, self.cumulative_cost, feature)
+            logger.info("iteration %d: feature %s (%d tasks)", iteration, feature.id, len(pending_tasks))
 
-            # Git checkpoint before starting task (rollback point)
-            checkpoint_tag = create_checkpoint(self.workspace_dir, next_task.id, iteration)
+            # Git checkpoint before feature (rollback point)
+            checkpoint_tag = create_checkpoint(self.workspace_dir, feature.id, iteration)
 
-            # Route to optimal model for this task's complexity
+            # Route model based on feature's max complexity
             routed_model = ""
             if self.config.auto_route_models:
                 routed_model = get_model_for_task(
-                    next_task.title, next_task.description,
-                    next_task.acceptance_criteria, self.config.provider,
+                    feature.title, "",
+                    [ac for t in pending_tasks for ac in t.acceptance_criteria],
+                    self.config.provider,
                 )
                 if routed_model != self.config.model:
                     console.print(f"  [dim]Routed to: {routed_model}[/dim]")
 
             provider = _create_provider(self.config, model_override=routed_model)
 
-            # Build enriched system prompt: base + codebase index + reflections
+            # Build enriched system prompt
             system_prompt = CODING_SYSTEM_PROMPT
-            # Inject codebase index for large repos (helps agent orient faster)
             codebase_idx = index_codebase(self.workspace_dir, max_tokens=3000)
             if codebase_idx and len(codebase_idx) > 100:
                 system_prompt += f"\n\n{codebase_idx}"
@@ -333,34 +396,77 @@ class RalphLoop:
             if reflections:
                 system_prompt += f"\n\n{reflections}"
 
-            # Coding session with timeout
+            # Build feature-level user message with ALL pending tasks
+            if len(pending_tasks) == 1:
+                # Single task — use simple template (backward compat with mocks)
+                user_message = CODING_USER_TEMPLATE.format(
+                    task_id=pending_tasks[0].id,
+                    task_title=pending_tasks[0].title,
+                )
+            else:
+                tasks_list = "\n".join(
+                    f"{i}. **{t.id}** — {t.title}\n"
+                    f"   {t.description}\n"
+                    f"   Acceptance: {', '.join(t.acceptance_criteria[:3])}\n"
+                    f"   Test: `{t.test_command or 'pytest'}`"
+                    for i, t in enumerate(pending_tasks, 1)
+                )
+                user_message = FEATURE_CODING_USER_TEMPLATE.format(
+                    feature_id=feature.id,
+                    feature_title=feature.title,
+                    tasks_list=tasks_list,
+                )
+
+            # Context wind-down: inject instructions into system prompt
+            system_prompt += (
+                f"\n\n## CONTEXT LIMITS\n"
+                f"You have a maximum of {WIND_DOWN_TOOL_CALLS} tool calls and "
+                f"{WIND_DOWN_DURATION_S // 60} minutes for this session.\n"
+                f"When you've used ~80% of your tool calls ({int(WIND_DOWN_TOOL_CALLS * 0.8)}+), "
+                f"WIND DOWN:\n"
+                f"1. Finish the current task you're working on\n"
+                f"2. Commit whatever is working\n"
+                f"3. Update progress.md with where you stopped\n"
+                f"4. Output <ralph:task_complete>TASK-ID</ralph:task_complete> for any completed tasks\n"
+                f"5. Do NOT start a new task — the next session will pick up\n"
+            )
+
+            # Coding session — one session for the entire feature
             coding_result = await self._run_with_timeout(
                 provider.run_session(
                     system_prompt=system_prompt,
-                    user_message=CODING_USER_TEMPLATE.format(
-                        task_id=next_task.id,
-                        task_title=next_task.title,
-                    ),
-                    max_turns=self.config.max_turns_per_session,
+                    user_message=user_message,
+                    max_turns=min(self.config.max_turns_per_session, WIND_DOWN_TOOL_CALLS),
                     on_text=self.on_text,
                     on_tool=self.on_tool,
                 ),
-                label=f"coding {next_task.id}",
+                label=f"coding {feature.id}",
             )
             self.cumulative_cost += coding_result.cost_usd
-            log_session(self.run_dir, self.run_id, iteration, "coding", next_task.id, coding_result)
+            log_session(self.run_dir, self.run_id, iteration, "coding", feature.id, coding_result)
 
-            # Session summary
+            # Detect wind-down
+            wound_down = coding_result.tool_calls_made >= int(WIND_DOWN_TOOL_CALLS * 0.8)
+            if wound_down:
+                console.print(f"  [yellow]Context wind-down: {coding_result.tool_calls_made} tool calls[/yellow]")
+
             console.print(
                 f"  [dim]───── Coding: ${coding_result.cost_usd:.4f} │ "
                 f"{coding_result.tool_calls_made} tools │ "
                 f"{coding_result.duration_ms / 1000:.0f}s ─────[/dim]"
             )
 
-            # Handle session failure
+            # Handle session failure — but check if some tasks were completed before the crash
             if not coding_result.success:
                 console.print(f"  [bold red]✗ Session FAILED[/bold red]: {coding_result.error[:200]}")
-                self._handle_incomplete(prd, next_task, iteration, f"Session error: {coding_result.error[:300]}")
+                # Even failed sessions may have partial output — check each task
+                for t in pending_tasks:
+                    if coding_result.final_response and _detect_completion(coding_result.final_response, self.run_dir, t.id):
+                        console.print(f"  [yellow]Salvaged: {t.id} (completed before crash)[/yellow]")
+                        summary = _extract_session_summary(coding_result.final_response, t.id)
+                        await self._complete_task(prd, t, iteration, suffix="(salvaged)", summary=summary)
+                    else:
+                        self._handle_incomplete(prd, t, iteration, f"Session error: {coding_result.error[:300]}")
                 await self._inter_delay()
                 continue
 
@@ -369,43 +475,86 @@ class RalphLoop:
             if fmt_ok and "reformatted" in fmt_out.lower():
                 console.print("  [dim]Auto-formatted[/dim]")
 
-            # Detect completion
-            completed = _detect_completion(coding_result.final_response, self.run_dir, next_task.id)
-
-            if completed:
-                console.print(f"  [cyan]Running QA Sentinel...[/cyan]")
-                qa_result = await self._run_qa(next_task, iteration)
-
-                if qa_result.passed:
-                    console.print(f"  [bold green]✓ QA PASSED[/bold green] — {next_task.id}")
-                    self._complete_task(prd, next_task, iteration)
+            # ── Detect which tasks were completed ──
+            completed_tasks = []
+            incomplete_tasks = []
+            for task in pending_tasks:
+                if _detect_completion(coding_result.final_response, self.run_dir, task.id):
+                    completed_tasks.append(task)
                 else:
-                    console.print(f"  [bold red]✗ QA FAILED[/bold red] — {'; '.join(qa_result.issues[:2])}")
-                    console.print(f"  [yellow]Starting Healer...[/yellow]")
-                    healed = await self._run_healer_loop(next_task, qa_result, iteration)
-                    if healed:
-                        console.print(f"  [bold green]✓ Healer FIXED[/bold green] — {next_task.id}")
-                        self._complete_task(prd, next_task, iteration, "(after healing)")
-                    else:
-                        self._fail_task(prd, next_task, iteration, qa_result)
-                        # Rollback to checkpoint on final failure
-                        if checkpoint_tag:
-                            console.print(f"  [dim]Rolling back to checkpoint...[/dim]")
-                            rollback_to_checkpoint(self.workspace_dir, checkpoint_tag)
-                        # Reflexion: learn from QA failure
-                        if self.config.enable_reflexion:
-                            await self._reflect(next_task, iteration, "QA_FAILED",
-                                                "; ".join(qa_result.issues[:5]))
-            else:
+                    incomplete_tasks.append(task)
+
+            if not completed_tasks:
+                # Nothing completed — handle as incomplete
+                first = pending_tasks[0]
                 blocked = _detect_blocked(coding_result.final_response)
                 if blocked:
-                    console.print(f"  [red]BLOCKED: {blocked[:100]}[/red]")
-                    add_guardrail(self.run_dir, sign=blocked, context=next_task.title)
+                    add_guardrail(self.run_dir, sign=blocked, context=feature.title)
+                self._handle_incomplete(prd, first, iteration, blocked or "No completion signal")
+                if checkpoint_tag:
+                    rollback_to_checkpoint(self.workspace_dir, checkpoint_tag)
+                await self._inter_delay()
+                continue
+
+            # ── Smart Gate: decide review level for this feature ──
+            needs_review = should_review_feature(feature) or self._prev_feature_had_issues
+            feature_had_issues = False
+
+            if needs_review:
+                console.print(f"  [magenta]Smart Gate → REVIEW (complex feature)[/magenta]")
+            else:
+                console.print(f"  [green]Smart Gate → SKIP review (simple feature)[/green]")
+
+            for task in completed_tasks:
+                summary = _extract_session_summary(coding_result.final_response, task.id)
+
+                if needs_review:
+                    # ── Reviewed path: run QA sentinel per task ──
+                    console.print(f"  [cyan]QA: {task.id}...[/cyan]")
+                    qa_result = await self._run_qa(task, iteration)
+
+                    if qa_result.passed:
+                        console.print(f"  [bold green]✓ QA PASSED[/bold green] — {task.id}")
+                        await self._complete_task(prd, task, iteration, summary=summary)
+                    else:
+                        console.print(f"  [bold red]✗ QA FAILED[/bold red] — {task.id}: {'; '.join(qa_result.issues[:2])}")
+                        feature_had_issues = True
+                        # Fixer: max 3 attempts, then BLOCKED
+                        fixed = await self._run_fixer_loop(task, qa_result, iteration)
+                        if fixed:
+                            console.print(f"  [bold green]✓ Fixer FIXED[/bold green] — {task.id}")
+                            await self._complete_task(prd, task, iteration, suffix="(after fix)", summary=summary)
+                        else:
+                            self._block_task(prd, task, iteration, qa_result)
+                            if self.config.enable_reflexion:
+                                await self._reflect(task, iteration, "QA_FAILED",
+                                                    "; ".join(qa_result.issues[:5]))
                 else:
-                    console.print(f"  [yellow]No completion signal for {next_task.id}[/yellow]")
+                    # ── Fast path: trust coder, skip QA ──
+                    console.print(f"  [bold green]✓ PASSED[/bold green] — {task.id} [dim](review skipped)[/dim]")
+                    await self._complete_task(prd, task, iteration, summary=summary)
 
-                self._handle_incomplete(prd, next_task, iteration, blocked or "No completion signal")
+            # Handle tasks the coder didn't complete
+            for task in incomplete_tasks:
+                blocked = _detect_blocked(coding_result.final_response)
+                if blocked and task.id in str(blocked):
+                    add_guardrail(self.run_dir, sign=blocked, context=task.title)
 
+            # Feature-level review (if gate says review the whole feature)
+            if needs_review and completed_tasks and not feature_had_issues:
+                console.print(f"  [magenta]Feature review: {feature.id}...[/magenta]")
+                review_result = await self._run_feature_review(feature, iteration)
+                if not review_result.passed:
+                    console.print(f"  [yellow]Reviewer issues: {'; '.join(review_result.issues[:2])}[/yellow]")
+                    feature_had_issues = True
+                    # Don't fail tasks — just log for next iteration
+                    add_guardrail(self.run_dir,
+                                  sign=f"Reviewer: {'; '.join(review_result.issues[:3])}",
+                                  context=feature.title)
+                else:
+                    console.print(f"  [green]Feature review: approved[/green]")
+
+            self._prev_feature_had_issues = feature_had_issues
             await self._inter_delay()
 
         console.print(f"[yellow]Max iterations ({self.config.max_iterations}). Cost: ${self.cumulative_cost:.4f}[/yellow]")
@@ -458,7 +607,7 @@ class RalphLoop:
             log_task_transition(self.run_dir, self.run_id, task.id, "pending", "failed", iteration)
 
     async def _ensure_prd(self, task_description: str) -> PRD:
-        prd_path = Path(self.run_dir) / "prd.json"
+        prd_path = Path(self.run_dir) / RALPH_DIR / "prd.json"
         if prd_path.exists():
             console.print("[dim]Loading existing PRD...[/dim]")
             try:
@@ -470,7 +619,15 @@ class RalphLoop:
         if not task_description:
             raise RuntimeError("No PRD and no task description provided. Use 'ralph run' with a task.")
         provider = _create_provider(self.config)
-        return await generate_spec(task_description, provider, self.run_dir)
+        prd = await generate_spec(task_description, provider, self.run_dir)
+
+        # Verify init.sh was created — warn if missing so coding agent knows
+        init_sh = Path(self.run_dir) / "init.sh"
+        if not init_sh.exists():
+            logger.warning("init.sh not created during PRD generation")
+            console.print("  [yellow]init.sh missing — coding agent will skip server startup[/yellow]")
+
+        return prd
 
     async def _run_qa(self, task, iteration: int) -> QAResult:
         provider = _create_provider(self.config)
@@ -495,6 +652,7 @@ class RalphLoop:
                     qa_result=qa_result, provider=provider,
                     task_id=task.id, task_title=task.title,
                     max_attempts=self.config.max_healer_attempts, attempt=attempt,
+                    workspace_dir=self.run_dir,
                 ),
                 label=f"healer {task.id} attempt {attempt}",
             )
@@ -517,18 +675,40 @@ class RalphLoop:
             console.print(f"    [yellow]Heal attempt {attempt} - still failing[/yellow]")
         return False
 
-    def _complete_task(self, prd: PRD, task, iteration: int, suffix: str = "") -> None:
+    async def _complete_task(self, prd: PRD, task, iteration: int, suffix: str = "", summary: dict | None = None) -> None:
         old_status = task.status.value
         prd.mark_task(task.id, TaskStatus.PASSED)
         save_prd(prd, self.run_dir)
         log_task_transition(self.run_dir, self.run_id, task.id, old_status, "passed", iteration)
+
+        s = summary or {}
         append_progress(
             self.run_dir, iteration=iteration,
             task_id=task.id, task_title=task.title,
             status=f"PASSED {suffix}".strip(),
+            notes=s.get("notes", ""),
+            files_changed=s.get("files_changed"),
+            test_results=s.get("test_results", ""),
+            patterns=s.get("patterns"),
         )
+
+        # Update project state snapshot after each task
+        completed = len(prd.completed_tasks)
+        total = len(prd.tasks)
+        update_project_state(self.run_dir, f"{completed}/{total} tasks passed ({prd.progress_pct:.0f}%)")
+
+        # Store any patterns learned
+        if s.get("patterns"):
+            update_codebase_patterns(self.run_dir, s["patterns"])
+
+        # Auto-aggregate learnings every 10 tasks
+        try:
+            provider = _create_provider(self.config)
+            await maybe_aggregate_learnings(self.run_dir, provider, completed)
+        except Exception as e:
+            logger.debug("learning aggregation skipped: %s", e)
+
         logger.info("task %s PASSED %s", task.id, suffix)
-        # Reset incomplete counter
         self._incomplete_counts.pop(task.id, None)
 
     def _fail_task(self, prd: PRD, task, iteration: int, qa_result: QAResult) -> None:
@@ -544,6 +724,91 @@ class RalphLoop:
             status="FAILED", notes=f"QA: {'; '.join(qa_result.issues[:3])}",
         )
         logger.warning("task %s FAILED: %s", task.id, qa_result.issues[:3])
+
+    async def _run_fixer_loop(self, task, qa_result: QAResult, iteration: int) -> bool:
+        """Phase 2 fixer: max 3 attempts, then mark BLOCKED (not FAILED)."""
+        for attempt in range(1, MAX_FIXER_ATTEMPTS + 1):
+            console.print(f"    [yellow]Fix attempt {attempt}/{MAX_FIXER_ATTEMPTS}[/yellow]")
+            provider = _create_provider(self.config)
+            fixer_result = await self._run_with_timeout(
+                run_healer(
+                    qa_result=qa_result, provider=provider,
+                    task_id=task.id, task_title=task.title,
+                    max_attempts=MAX_FIXER_ATTEMPTS, attempt=attempt,
+                    workspace_dir=self.run_dir,
+                ),
+                label=f"fixer {task.id} attempt {attempt}",
+            )
+            if isinstance(fixer_result, AgentResult):
+                self.cumulative_cost += fixer_result.cost_usd
+                log_session(self.run_dir, self.run_id, iteration,
+                            f"fixer-{attempt}", task.id, fixer_result)
+
+            provider = _create_provider(self.config)
+            qa_result = await self._run_with_timeout(
+                run_sentinel(task, provider, self.workspace_dir),
+                label=f"qa-post-fix {task.id}",
+            )
+            if not isinstance(qa_result, QAResult):
+                qa_result = QAResult(passed=False, issues=["QA timed out after fix"])
+            log_qa(self.run_dir, self.run_id, iteration, task.id, qa_result)
+
+            if qa_result.passed:
+                return True
+            console.print(f"    [yellow]Fix attempt {attempt} — still failing[/yellow]")
+        return False
+
+    def _block_task(self, prd: PRD, task, iteration: int, qa_result: QAResult) -> None:
+        """Phase 2: mark task BLOCKED (not FAILED) after max fixer attempts."""
+        console.print(f"  [red]BLOCKED: {task.id} (after {MAX_FIXER_ATTEMPTS} fix attempts)[/red]")
+        old_status = task.status.value
+        prd.mark_task(task.id, TaskStatus.BLOCKED,
+                      notes=f"Blocked after {MAX_FIXER_ATTEMPTS} fix attempts: {'; '.join(qa_result.issues[:3])}")
+        save_prd(prd, self.run_dir)
+        log_task_transition(self.run_dir, self.run_id, task.id, old_status, "blocked", iteration)
+        add_guardrail(self.run_dir,
+                      sign=f"{task.id} BLOCKED: {'; '.join(qa_result.issues[:3])}",
+                      context=task.title)
+        append_progress(
+            self.run_dir, iteration=iteration,
+            task_id=task.id, task_title=task.title,
+            status="BLOCKED",
+            notes=f"After {MAX_FIXER_ATTEMPTS} fix attempts: {'; '.join(qa_result.issues[:3])}",
+        )
+        logger.warning("task %s BLOCKED: %s", task.id, qa_result.issues[:3])
+
+    async def _run_feature_review(self, feature, iteration: int) -> QAResult:
+        """Phase 2: lightweight code review of the whole feature (reads, doesn't run).
+
+        Phase 3 cross-model: if a second provider is available (e.g., OpenAI),
+        use it for the review so a different model catches different blind spots.
+        """
+        # Cross-model review: use alternate provider if available
+        if self.config.provider == "claude-sdk" and self.config.openai_api_key:
+            try:
+                reviewer_provider = create_provider(
+                    "deep-agents", model="openai:gpt-4o",
+                    workspace_dir=self.workspace_dir,
+                    api_key=self.config.openai_api_key,
+                )
+                console.print("  [dim]Cross-model review: GPT-4o[/dim]")
+            except Exception:
+                reviewer_provider = _create_provider(self.config)
+        else:
+            reviewer_provider = _create_provider(self.config)
+
+        review = await self._run_with_timeout(
+            run_reviewer(feature, reviewer_provider, self.workspace_dir),
+            label=f"reviewer {feature.id}",
+        )
+        if not isinstance(review, QAResult):
+            review = QAResult(passed=True, issues=[])  # Timeout = don't block
+        self.cumulative_cost += review.cost_usd
+        if review.cost_usd > 0:
+            console.print(f"    [dim]Review: ${review.cost_usd:.4f} | {review.duration_ms / 1000:.1f}s[/dim]")
+        log_session(self.run_dir, self.run_id, iteration, "reviewer", feature.id,
+                    AgentResult(success=True, cost_usd=review.cost_usd, duration_ms=review.duration_ms))
+        return review
 
     async def _reflect(self, task, iteration: int, failure_type: str, error_context: str) -> None:
         """Trigger LLM reflection on a failure (Reflexion pattern)."""
@@ -562,31 +827,22 @@ class RalphLoop:
         except Exception as e:
             logger.warning("reflection failed (non-critical): %s", e)
 
-    async def _maybe_create_pr(self, prd: PRD, iterations: int) -> None:
-        """Create a GitHub PR if gh CLI is available and remote is configured."""
-        if not is_gh_available():
-            return
+    async def _ship(self, prd: PRD) -> None:
+        """Push to branch and create PR via shipper agent."""
         try:
-            completed = [
-                {"id": t.id, "title": t.title}
-                for t in prd.tasks if t.status == TaskStatus.PASSED
-            ]
-            body = generate_pr_body(
-                project_name=prd.project_name,
-                tasks_completed=completed,
-                total_cost=self.cumulative_cost,
-                total_tests=0,  # Could count from test suite
-            )
-            pr_url = await create_pull_request(
+            result = await shipper_ship(
                 workspace_dir=self.workspace_dir,
-                title=f"feat: {prd.project_name} ({len(completed)} tasks)",
-                body=body,
-                branch=prd.branch_name,
+                prd=prd,
+                cumulative_cost=self.cumulative_cost,
             )
-            if pr_url:
-                console.print(f"  [bold green]PR created: {pr_url}[/bold green]")
+            if result.get("pushed"):
+                console.print(f"  [green]Pushed to origin/{prd.branch_name}[/green]")
+            if result.get("pr_url"):
+                console.print(f"  [bold green]PR created: {result['pr_url']}[/bold green]")
+            if result.get("error"):
+                console.print(f"  [dim]Ship: {result['error']}[/dim]")
         except Exception as e:
-            logger.debug("PR creation skipped: %s", e)
+            logger.debug("shipping skipped: %s", e)
 
     async def _inter_delay(self) -> None:
         console.print(f"[dim]Next in {INTER_ITERATION_DELAY}s (Ctrl+C to stop)...[/dim]")

@@ -25,6 +25,8 @@ PRD_SYSTEM_PROMPT = _load("prd_system")
 CODING_SYSTEM_PROMPT = _load("coding")
 QA_SYSTEM_PROMPT = _load("qa_system")
 HEALER_SYSTEM_PROMPT = _load("healer")
+REVIEWER_SYSTEM_PROMPT = _load("reviewer")
+SPEC_REVIEWER_SYSTEM_PROMPT = _load("spec_reviewer")
 
 # User templates (lightweight formatters)
 SPEC_USER_TEMPLATE = """\
@@ -61,6 +63,22 @@ Start a new coding session for: {task_id} - {task_title}
 
 Follow the 10-step protocol. Begin with Step 1 (Get Your Bearings).
 Output <ralph:task_complete>{task_id}</ralph:task_complete> when verified.
+"""
+
+FEATURE_CODING_USER_TEMPLATE = """\
+Start a new coding session for Feature: {feature_id} - {feature_title}
+
+## Tasks to complete (in order):
+{tasks_list}
+
+## Instructions
+Follow the 10-step protocol. Begin with Step 1 (Get Your Bearings).
+
+Complete each task in the order listed above. After EACH task:
+1. Write tests and verify they pass
+2. Output <ralph:task_complete>TASK-ID</ralph:task_complete>
+
+Continue to the next task without stopping. Complete ALL tasks in this feature.
 """
 
 QA_USER_TEMPLATE = """\

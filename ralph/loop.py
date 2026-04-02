@@ -201,9 +201,17 @@ class RalphLoop:
         _on_tool(name, tool_input)
 
     async def run(self, task_description: str) -> None:
-        # Create workspace + .ralph directory (parents=True handles new workspaces)
-        Path(self.workspace_dir).mkdir(parents=True, exist_ok=True)
-        ralph_dir = Path(self.workspace_dir) / RALPH_DIR
+        # Workspace must exist — Ralph works INSIDE an existing directory
+        ws = Path(self.workspace_dir)
+        if not ws.exists():
+            # Create only if it's a subdirectory of cwd (not arbitrary paths)
+            if str(ws.resolve()).startswith(str(Path.cwd().resolve())):
+                ws.mkdir(parents=True, exist_ok=True)
+            else:
+                raise FileNotFoundError(
+                    f"Workspace '{ws}' does not exist. Create it first or use -w . to work in current directory."
+                )
+        ralph_dir = ws / RALPH_DIR
         ralph_dir.mkdir(exist_ok=True)
 
         # Create session directory: .ralph/sessions/ralph_<uuid>/

@@ -72,8 +72,13 @@ Run this FIRST. If it fails, the review automatically fails.
 Acceptance criteria (verify each step):
 {acceptance_criteria}
 
-Read `.ralph/guardrails.md` for known failure patterns.
-Write verdict to `.ralph/qa_result.json`.
+IMPORTANT: Output your verdict as a JSON code block in your response:
+
+```json
+{{"passed": true/false, "issues": [...], "test_output": "...", "suggestions": [...]}}
+```
+
+Do NOT use the Write tool for the verdict — just output it in your response text.
 """
 
 HEALER_USER_TEMPLATE = """\

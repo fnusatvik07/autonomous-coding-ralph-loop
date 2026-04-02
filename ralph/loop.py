@@ -201,16 +201,21 @@ class RalphLoop:
         _on_tool(name, tool_input)
 
     async def run(self, task_description: str) -> None:
-        # Workspace = directory where code lives
+        # Create runs directory inside workspace
         ws = Path(self.workspace_dir)
         ws.mkdir(parents=True, exist_ok=True)
+        runs_root = ws / "runs"
+        runs_root.mkdir(exist_ok=True)
 
-        # Run directory: .ralph/runs/ralph_<uuid>/
-        ralph_root = ws / RALPH_DIR
-        ralph_root.mkdir(exist_ok=True)
-        run_dir = ralph_root / "runs" / f"ralph_{self.run_id}"
+        # Each run gets its own folder — code AND state files go here
+        run_dir = runs_root / f"ralph_{self.run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / RALPH_DIR).mkdir(exist_ok=True)  # .ralph inside run dir for state files
+
+        # run_dir = where code is generated AND where state lives
         self.run_dir = str(run_dir)
+        # Override workspace_dir so the agent writes code INTO the run folder
+        self.workspace_dir = str(run_dir)
 
         # ALL state files go in run directory — nothing in .ralph/ root
         setup_logging(self.run_dir)

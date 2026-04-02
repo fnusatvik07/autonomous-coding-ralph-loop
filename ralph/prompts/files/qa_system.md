@@ -15,7 +15,7 @@ well-tested, and production-ready.
 
 ### OUTPUT
 
-Write a JSON verdict to `.ralph/qa_result.json`:
+Output your verdict as a JSON code block in your response text:
 
 ```json
 {
@@ -25,6 +25,9 @@ Write a JSON verdict to `.ralph/qa_result.json`:
   "suggestions": ["non-blocking suggestions"]
 }
 ```
+
+Do NOT use the Write tool for the verdict. Just output the JSON
+in your response and the system will process it.
 
 ### RULES
 

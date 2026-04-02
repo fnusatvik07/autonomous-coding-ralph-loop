@@ -149,3 +149,64 @@ def get_model_for_phase(
     }
     complexity = phase_complexity.get(phase, Complexity.MODERATE)
     return tiers[complexity].model
+
+
+# ─── Review Gating (for Phase 2: smart reviewer) ───
+
+COMPLEX_KEYWORDS_REVIEW = {
+    "refactor", "migrate", "auth", "security", "multi", "integration",
+    "cascade", "concurrent", "transaction", "middleware", "permission",
+    "encryption", "session", "token", "oauth", "webhook",
+}
+
+
+def classify_review_need(task) -> str:
+    """Classify whether a task needs review. Returns 'simple', 'moderate', 'complex'.
+
+    Rule-based, no LLM call. Uses task fields from prd.json.
+    """
+    score = 0
+
+    # Criteria count
+    criteria = len(task.acceptance_criteria)
+    if criteria <= 2:
+        score += 0
+    elif criteria <= 4:
+        score += 1
+    else:
+        score += 2  # 5+ criteria = complex
+
+    # Category
+    category = getattr(task, "category", "functional")
+    if category in ("validation", "quality"):
+        score += 0
+    elif category == "functional":
+        score += 1
+    elif category in ("error_handling", "integration"):
+        score += 2
+
+    # Keywords in title + description
+    text = f"{task.title} {getattr(task, 'description', '')}".lower()
+    if any(kw in text for kw in COMPLEX_KEYWORDS_REVIEW):
+        score += 2
+
+    if score <= 1:
+        return "simple"     # skip reviewer (~60% of tasks)
+    elif score <= 3:
+        return "moderate"   # skip unless previous feature failed (~25%)
+    else:
+        return "complex"    # always review (~15%)
+
+
+def should_review_feature(feature) -> bool:
+    """Decide if a feature needs review based on its tasks' complexity.
+
+    A feature is reviewed if ANY of its tasks are 'complex'
+    or if 2+ tasks are 'moderate'.
+    """
+    complexities = [classify_review_need(t) for t in feature.tasks]
+    if "complex" in complexities:
+        return True
+    if complexities.count("moderate") >= 2:
+        return True
+    return False

@@ -108,7 +108,7 @@ def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float
     )
     console.print(
         f"  [bold]► {task.id}[/bold]: {task.title}"
-        f"  [dim]({task.category} │ P{task.priority} │ {len(task.acceptance_criteria)} criteria)[/dim]"
+        f"  [dim]({task.category} │ {task.complexity} │ {len(task.acceptance_criteria)} criteria)[/dim]"
     )
     console.print(f"[bold]{'─' * 70}[/bold]")
 
@@ -601,8 +601,10 @@ class RalphLoop:
     @staticmethod
     def _format_prd_summary(prd: PRD) -> str:
         lines = [f"[bold]{prd.project_name}[/bold]", prd.description, ""]
-        for t in prd.tasks:
-            lines.append(f"  {t.id} [{t.priority}] {t.title}")
-            for ac in t.acceptance_criteria[:2]:
-                lines.append(f"    - {ac}")
+        for feat in prd.features:
+            lines.append(f"  [bold]{feat.id}: {feat.title}[/bold] (P{feat.priority})")
+            for t in feat.tasks:
+                lines.append(f"    {t.id} [{t.category}] {t.title}")
+                for ac in t.acceptance_criteria[:2]:
+                    lines.append(f"      - {ac}")
         return "\n".join(lines)

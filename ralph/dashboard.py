@@ -30,8 +30,14 @@ def generate_dashboard_html(workspace_dir: str) -> str:
     guardrails = _load_text(ralph_dir / "guardrails.md")
     reflections = _load_text(ralph_dir / "reflections.md")
 
-    # Compute metrics
-    tasks = prd_data.get("tasks", []) if prd_data else []
+    # Compute metrics — handle both v3 (features→tasks) and v2 (flat tasks)
+    tasks = []
+    if prd_data:
+        if "features" in prd_data:
+            for f in prd_data["features"]:
+                tasks.extend(f.get("tasks", []))
+        else:
+            tasks = prd_data.get("tasks", [])
     total = len(tasks)
     passed = sum(1 for t in tasks if t.get("status") == "passed")
     failed = sum(1 for t in tasks if t.get("status") == "failed")

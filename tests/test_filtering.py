@@ -148,6 +148,14 @@ class TestInvalidQueryParams:
         resp = client.get("/api/todos", params={"limit": 100})
         assert resp.status_code == 200
 
+    def test_sort_invalid_returns_422(self, client: TestClient):
+        resp = client.get("/api/todos", params={"sort": "invalid"})
+        assert resp.status_code == 422
+
+    def test_order_invalid_returns_422(self, client: TestClient):
+        resp = client.get("/api/todos", params={"order": "invalid"})
+        assert resp.status_code == 422
+
 
 class TestDefaultPagination:
     """TASK-048: Default pagination: limit=20, skip=0."""

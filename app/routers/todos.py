@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import sqlite3
 
-from typing import List
+from typing import List, Literal
 
 from typing import Optional
 
@@ -23,8 +23,8 @@ ALLOWED_ORDER = {"asc", "desc"}
 def list_todos(
     completed: Optional[bool] = None,
     search: Optional[str] = None,
-    sort: Optional[str] = Query(default=None),
-    order: Optional[str] = Query(default=None),
+    sort: Optional[Literal["title", "created_at"]] = Query(default=None),
+    order: Optional[Literal["asc", "desc"]] = Query(default=None),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: sqlite3.Connection = Depends(get_db),

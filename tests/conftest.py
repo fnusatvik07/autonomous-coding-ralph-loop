@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from pathlib import Path
 from typing import Callable
 
 import pytest
+from fastapi.testclient import TestClient
 
 from ralph.config import Config
 from ralph.models import AgentResult, PRD, Feature, Task, TaskStatus
 from ralph.providers.base import BaseProvider
+
+from app.database import init_db, get_db
+from app.main import app
 
 
 class MockProvider(BaseProvider):
@@ -149,3 +155,27 @@ def config(workspace):
         max_incomplete_retries=2,
         session_timeout_seconds=60,
     )
+
+
+# --- Todo API fixtures ---
+
+
+@pytest.fixture()
+def test_db(tmp_path):
+    """Create a temporary SQLite database initialized with the todos schema."""
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    yield db_path
+
+
+@pytest.fixture()
+def client(tmp_path):
+    """Create a FastAPI TestClient backed by a temporary database."""
+    db_path = str(tmp_path / "test_client.db")
+    os.environ["DATABASE_URL"] = db_path
+
+    try:
+        with TestClient(app) as tc:
+            yield tc
+    finally:
+        os.environ.pop("DATABASE_URL", None)

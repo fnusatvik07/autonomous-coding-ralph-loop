@@ -1,27 +1,26 @@
 ## YOUR ROLE - TEST ENGINEER & PROJECT PLANNER
 
 You have an approved Application Specification. Your job is to convert it
-into a comprehensive test-case-driven feature list that an autonomous coding
-agent can execute one feature at a time.
+into a hierarchical, test-case-driven feature list that an autonomous coding
+agent can execute one feature group at a time.
 
-### KEY PRINCIPLE
+### KEY PRINCIPLES
 
-Each "task" is a TESTABLE FEATURE with verification steps.
-The agent's job is to make each test pass.
-This is test-driven development at the project level.
+1. Each "feature" groups related tasks that a coder handles in ONE session
+2. Each "task" within a feature is a single testable behavior
+3. The coder picks a feature, completes ALL its tasks, commits, moves on
+4. This is test-driven development at the project level
 
 ### SCALE GUIDELINES
 
-Adjust the number of tasks based on project complexity:
-- Simple CLI tool or library: 20-40 test cases
-- REST API with database: 50-100 test cases
-- Full web application: 100-200 test cases
+Adjust based on project complexity:
+- Simple CLI/library: 5-8 features, 20-40 tasks total
+- REST API with database: 8-15 features, 50-100 tasks total
+- Full web application: 15-25 features, 100-200 tasks total
 
-More granular = better.
-BAD: "Add CRUD endpoints" (too big — this is 5+ separate behaviors)
-GOOD: "POST /todos returns 201 with correct body" (one testable behavior)
+Each feature should have 2-8 tasks. If a feature has 10+ tasks, split it.
 
-### OUTPUT
+### OUTPUT FORMAT
 
 Write to `.ralph/prd.json` with this EXACT schema:
 
@@ -30,104 +29,102 @@ Write to `.ralph/prd.json` with this EXACT schema:
   "project_name": "string",
   "branch_name": "feature/name",
   "description": "One paragraph description",
-  "tasks": [
+  "features": [
     {
-      "id": "TASK-001",
-      "category": "functional",
-      "title": "Short description of what this test verifies",
-      "description": "Detailed description of the feature to implement and WHY",
-      "acceptance_criteria": [
-        "Step 1: Set up the precondition",
-        "Step 2: Perform the action",
-        "Step 3: Verify the expected result",
-        "Step 4: Check edge case"
-      ],
+      "id": "FEAT-001",
+      "title": "Feature group name (e.g., Author CRUD)",
       "priority": 1,
-      "status": "pending",
-      "test_command": "runnable command to verify this feature",
-      "notes": "Implementation hints, estimated lines, dependencies"
+      "tasks": [
+        {
+          "id": "TASK-001",
+          "category": "functional",
+          "complexity": "simple",
+          "title": "What this test verifies",
+          "description": "What to implement and WHY",
+          "acceptance_criteria": [
+            "Step 1: precondition",
+            "Step 2: action",
+            "Step 3: verify result"
+          ],
+          "status": "pending",
+          "test_command": "runnable verification command",
+          "notes": ""
+        }
+      ]
     }
   ]
 }
 ```
 
+### FEATURE GROUPING
+
+Group tasks into features by logical area:
+- **FEAT-001: Project Infrastructure** — scaffolding, deps, config, init.sh
+- **FEAT-002: Data Models** — database schema, Pydantic models
+- **FEAT-003: Author CRUD** — all author endpoints + validation + errors
+- **FEAT-004: Book CRUD** — all book endpoints + validation + errors
+- **FEAT-005: Search & Filtering** — search, filter, pagination
+- **FEAT-006: Integration** — cross-entity behavior, cascade, workflows
+- **FEAT-007: Test Suite** — comprehensive tests, coverage target
+- **FEAT-008: Polish** — documentation, init.sh, code quality
+
+Each feature = one coding session. The coder implements ALL tasks in the
+feature before committing.
+
 ### TASK CATEGORIES
 
-Every task MUST have a `category` field. Use one of:
+Every task MUST have a `category`:
+- **"functional"** — does the feature work?
+- **"validation"** — does it reject bad input?
+- **"error_handling"** — does it handle failures (404, 500)?
+- **"style"** — does it look/feel right? (UI projects)
+- **"integration"** — do features work together?
+- **"quality"** — tests exist, coverage met, docs exist?
 
-- **"functional"** — Does the feature work? (API returns correct data, function computes right result, command produces expected output)
-- **"validation"** — Does it reject bad input? (empty string returns 422, negative number raises error, missing field rejected)
-- **"error_handling"** — Does it handle failures? (missing resource returns 404, server error returns 500, network timeout handled)
-- **"style"** — Does it look/feel right? (UI layout correct, colors match spec, responsive design works, accessibility)
-- **"integration"** — Do features work together? (create then read, update then verify, full workflow end-to-end)
-- **"quality"** — Is it well-built? (tests exist and pass, coverage target met, no console errors, documentation exists)
+### TASK COMPLEXITY
 
-A well-balanced task list should have roughly:
-- 40% functional
-- 20% validation + error_handling
-- 15% integration
-- 15% quality
-- 10% style (for web/UI projects)
+Every task MUST have a `complexity`:
+- **"simple"** — 1-2 acceptance criteria, straightforward implementation
+- **"moderate"** — 3-4 criteria, requires some thought
+- **"complex"** — 5+ criteria, multi-file changes, edge cases, integration
 
-### REQUIREMENTS FOR TASKS
+### REQUIREMENTS
 
 **Step counts:**
-- Minimum 2 steps per task
-- At least 25% of tasks MUST have 5+ verification steps
-- For projects with 100+ tasks, at least 25 tasks MUST have 10+ steps
-- Complex integration tests should have 8-15 steps
+- Minimum 2 acceptance criteria per task
+- 25% of tasks MUST have 5+ criteria
+- For 100+ task projects, at least 25 tasks MUST have 10+ steps
 
-**Coverage — EVERY feature from the spec must have tasks for:**
-- Happy path (normal usage works)
-- Error cases (invalid input returns proper error)
-- Edge cases (empty input, boundary values, special characters)
-- Integration (features work together, not just in isolation)
+**Coverage per feature:**
+- Happy path (normal usage)
+- Error cases (bad input → proper error)
+- Edge cases (empty, boundary, special characters)
 
 **Each task MUST have:**
-- A unique sequential ID (TASK-001, TASK-002, ...)
-- A category from the list above
-- A clear, specific title (not vague)
-- Detailed description explaining what to implement
-- 2-15 ordered acceptance_criteria (verification steps)
-- A real, runnable test_command
-- Notes with implementation hints
+- Unique sequential ID (TASK-001, TASK-002...)
+- Category and complexity
+- Clear title
+- 2-15 acceptance criteria (verification steps)
+- Real, runnable test_command
 
-### CATEGORIES TO COVER IN ORDER
-
-1. **Infrastructure** — project setup, dependencies, config, .gitignore, init.sh
-2. **Core functionality** — main features, one behavior per task
-3. **Input validation** — reject bad input with proper error codes/messages
-4. **Error handling** — 404 for missing resources, 500 for server errors, edge cases
-5. **Integration** — features work together end-to-end
-6. **Testing** — unit tests exist, integration tests exist, all pass
-7. **Style** — UI matches spec (for web projects), CLI output formatted correctly
-8. **Polish** — code quality, documentation, test coverage target, init.sh works
-
-### CRITICAL INSTRUCTION
+### CRITICAL INSTRUCTIONS
 
 **IT IS CATASTROPHIC TO HAVE TOO FEW TASKS.**
 
-A REST API with 5 endpoints should have AT LEAST 40 tasks — not 5 or 10.
-Each endpoint needs: create works, validation rejects bad input, missing
-resource returns 404, edge cases handled, test exists, integration with
-other endpoints works. That's 8+ tasks per endpoint minimum.
+A feature with 5 endpoints needs: each endpoint works, each validates input,
+each handles missing resources, each has tests. That's 4+ tasks per endpoint.
 
-**IT IS CATASTROPHIC TO REMOVE OR EDIT TASKS IN FUTURE SESSIONS.**
+**IT IS CATASTROPHIC TO REMOVE OR EDIT TASKS.**
 
-Tasks can ONLY be marked as passing (change `"pending"` to `"passed"`).
-Never remove tasks, never edit descriptions, never modify verification steps,
-never change the category. This ensures no functionality is missed.
+Tasks can ONLY change status: "pending" → "passed" or "blocked".
+Never remove, edit descriptions, or modify criteria.
 
 ### ALSO CREATE: init.sh
 
-In addition to prd.json, create an `init.sh` script in the workspace root
-that future agents can run to set up the development environment:
-
+Create `init.sh` in the workspace root:
 ```bash
 #!/bin/bash
 # Install dependencies
-# Start servers/services
-# Print how to access the application
+# Start servers
+# Print access instructions
 ```
-
-Base it on the technology stack in the spec.

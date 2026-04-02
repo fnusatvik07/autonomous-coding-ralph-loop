@@ -28,15 +28,20 @@ HEALER_SYSTEM_PROMPT = _load("healer")
 
 # User templates (lightweight formatters)
 SPEC_USER_TEMPLATE = """\
-## Task Description
+## User Input
 
 {task_description}
 
 ## Instructions
 
-1. Use Glob and Read to examine the current workspace
-2. Write a comprehensive spec to `.ralph/spec.md`
-3. Cover every feature, edge case, and error condition
+The above is what the user provided. It could be a one-liner, bullet points,
+a detailed spec, or a pasted document. Regardless of how detailed or vague it is:
+
+1. Use Glob and Read to examine the current workspace for existing code
+2. Expand the user's input into a COMPLETE application specification
+3. Fill in every gap — if the user didn't specify something, decide it
+4. Write the full spec to `.ralph/spec.md`
+5. Every feature, every error case, every validation rule, every endpoint
 """
 
 PRD_USER_TEMPLATE = """\

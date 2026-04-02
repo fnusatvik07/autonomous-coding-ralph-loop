@@ -79,9 +79,10 @@ async def generate_spec(
         if not result.success:
             raise RuntimeError(f"Spec generation failed: {result.error}")
 
-        if not spec_path.exists():
-            spec_path.write_text(result.final_response)
-            console.print("  [dim]Saved spec from response[/dim]")
+        # Save spec from response text (we told LLM not to use Write tool)
+        spec_content = _extract_spec(result.final_response)
+        spec_path.write_text(spec_content)
+        console.print(f"  [dim]Saved spec ({len(spec_content)} chars)[/dim]")
 
     console.print(f"  [green]spec.md ready ({spec_path.stat().st_size} bytes)[/green]")
 
@@ -246,3 +247,20 @@ def _extract_json(text: str) -> dict | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_spec(text: str) -> str:
+    """Extract the spec markdown from the LLM response.
+
+    Looks for '# Application Specification' header and takes everything from there.
+    If not found, returns the full response.
+    """
+    # Find the start of the actual spec
+    markers = ["# Application Specification", "# Specification:", "## Overview"]
+    for marker in markers:
+        idx = text.find(marker)
+        if idx != -1:
+            return text[idx:].strip()
+
+    # If no marker found, return full text (it might be the spec itself)
+    return text.strip()

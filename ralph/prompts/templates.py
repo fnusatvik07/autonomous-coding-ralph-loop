@@ -34,14 +34,14 @@ SPEC_USER_TEMPLATE = """\
 
 ## Instructions
 
-The above is what the user provided. It could be a one-liner, bullet points,
-a detailed spec, or a pasted document. Regardless of how detailed or vague it is:
-
 1. Use Glob and Read to examine the current workspace for existing code
 2. Expand the user's input into a COMPLETE application specification
 3. Fill in every gap — if the user didn't specify something, decide it
-4. Write the full spec to `.ralph/spec.md`
-5. Every feature, every error case, every validation rule, every endpoint
+
+IMPORTANT: Output the ENTIRE specification as markdown directly in your response.
+Do NOT use the Write tool for the spec. Just output it as text.
+Start your output with: # Application Specification:
+Include every section from the spec template.
 """
 
 PRD_USER_TEMPLATE = """\

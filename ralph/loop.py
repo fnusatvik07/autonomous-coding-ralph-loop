@@ -203,6 +203,11 @@ class RalphLoop:
     async def run(self, task_description: str) -> None:
         ralph_dir = Path(self.workspace_dir) / RALPH_DIR
         ralph_dir.mkdir(exist_ok=True)
+
+        # Create session directory: .ralph/sessions/ralph_<uuid>/
+        session_dir = ralph_dir / "sessions" / f"ralph_{self.run_id}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+
         setup_logging(self.workspace_dir)
         init_progress(self.workspace_dir)
         init_guardrails(self.workspace_dir)
@@ -210,21 +215,53 @@ class RalphLoop:
         logger.info("ralph loop starting: run=%s provider=%s model=%s",
                      self.run_id, self.config.provider, self.config.model)
 
+        # ── Step 1: Generate or Load Spec + PRD ──
+        console.print()
+        console.print("[bold]Step 1: Specification & Task List[/bold]")
+        console.print("[dim]  Generating application spec and breaking it into testable tasks...[/dim]")
+        console.print()
+
         prd = await self._ensure_prd(task_description)
 
+        # Copy spec + prd to session directory for tracking
+        for fname in ("spec.md", "prd.json"):
+            src = ralph_dir / fname
+            if src.exists():
+                import shutil
+                shutil.copy2(src, session_dir / fname)
+
+        # ── Step 2: Review (if enabled) ──
         if self.config.approve_spec and not self._prd_previously_approved():
-            console.print(Panel(self._format_prd_summary(prd), title="Spec Review"))
+            console.print()
+            console.print("[bold]Step 2: Human Review[/bold]")
+            console.print("[dim]  Review the spec and task list before coding begins.[/dim]")
+            console.print()
+            console.print(self._format_prd_summary(prd))
             if not self._ask_approval("Approve this spec and start coding?"):
                 console.print("[yellow]Spec not approved. Exiting.[/yellow]")
                 return
             self._mark_prd_approved()
 
+        # ── Smart defaults ──
+        total_tasks = len(prd.tasks)
+        if self.config.max_iterations == 50 and total_tasks > 50:
+            # Auto-adjust max_iterations to task count + buffer for healer retries
+            self.config.max_iterations = total_tasks + max(10, total_tasks // 5)
+            logger.info("auto-adjusted max_iterations to %d (tasks=%d + buffer)",
+                        self.config.max_iterations, total_tasks)
+
+        # ── Step 3: Coding Loop ──
+        console.print()
+        console.print("[bold]Step 3: Autonomous Coding[/bold]")
+        console.print(f"[dim]  {total_tasks} tasks to complete. Each iteration: code → test → QA → commit.[/dim]")
+        console.print()
         console.print(Panel(
-            f"[bold green]Ralph Loop Starting[/bold green]\n"
-            f"Run: {self.run_id} | Project: {prd.project_name}\n"
-            f"Tasks: {len(prd.tasks)} | Provider: {self.config.provider} | Model: {self.config.model}\n"
-            f"Max iterations: {self.config.max_iterations}"
-            + (f" | Budget: ${self.config.max_budget_usd:.2f}" if self.config.max_budget_usd > 0 else ""),
+            f"[bold]Run:[/bold] ralph_{self.run_id}\n"
+            f"[bold]Project:[/bold] {prd.project_name}\n"
+            f"[bold]Tasks:[/bold] {total_tasks} ({len(prd.pending_tasks)} pending)\n"
+            f"[bold]Provider:[/bold] {self.config.provider} | [bold]Model:[/bold] {self.config.model}\n"
+            f"[bold]Max iterations:[/bold] {self.config.max_iterations}"
+            + (f" | [bold]Budget:[/bold] ${self.config.max_budget_usd:.2f}" if self.config.max_budget_usd > 0 else ""),
             title="Ralph Loop",
         ))
 

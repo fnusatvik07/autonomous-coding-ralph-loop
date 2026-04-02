@@ -42,6 +42,56 @@ class TestCreateTodoTitleOnly:
         datetime.fromisoformat(data["updated_at"])
 
 
+class TestCreateTodoCompletedTrue:
+    """TASK-016: POST /api/todos creates todo with completed=true."""
+
+    def test_completed_true_returns_201(self, client: TestClient):
+        response = client.post("/api/todos", json={"title": "Done", "completed": True})
+        assert response.status_code == 201
+
+    def test_completed_true_in_response(self, client: TestClient):
+        response = client.post("/api/todos", json={"title": "Done", "completed": True})
+        data = response.json()
+        assert data["completed"] is True
+
+    def test_completed_true_title_matches(self, client: TestClient):
+        response = client.post("/api/todos", json={"title": "Done", "completed": True})
+        data = response.json()
+        assert data["title"] == "Done"
+
+
+class TestCreateTodoWhitespaceTitle:
+    """Whitespace-only titles are rejected."""
+
+    def test_whitespace_spaces_returns_422(self, client: TestClient):
+        response = client.post("/api/todos", json={"title": "   "})
+        assert response.status_code == 422
+
+    def test_whitespace_tabs_returns_422(self, client: TestClient):
+        response = client.post("/api/todos", json={"title": "\t\t"})
+        assert response.status_code == 422
+
+
+class TestCreateTodoUniqueId:
+    """TASK-022: Multiple creates produce unique incrementing IDs."""
+
+    def test_three_creates_have_unique_ids(self, client: TestClient):
+        ids = []
+        for i in range(3):
+            resp = client.post("/api/todos", json={"title": f"Todo {i}"})
+            assert resp.status_code == 201
+            ids.append(resp.json()["id"])
+        assert len(set(ids)) == 3
+
+    def test_ids_are_incrementing(self, client: TestClient):
+        ids = []
+        for i in range(3):
+            resp = client.post("/api/todos", json={"title": f"Todo {i}"})
+            ids.append(resp.json()["id"])
+        assert ids == sorted(ids)
+        assert ids[2] > ids[1] > ids[0]
+
+
 class TestCreateTodoMissingTitle:
     """TASK-017: POST /api/todos rejects missing title."""
 

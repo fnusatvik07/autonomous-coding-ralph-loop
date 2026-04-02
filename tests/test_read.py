@@ -1,4 +1,7 @@
 """Tests for GET /api/todos endpoint — empty list and count behavior."""
+import time
+
+from fastapi.testclient import TestClient
 
 
 class TestListTodosCount:
@@ -49,3 +52,55 @@ class TestListTodosEmpty:
         """GET /api/todos with no data returns an empty JSON array []."""
         response = client.get("/api/todos")
         assert response.json() == []
+
+
+class TestListTodosDefaultOrder:
+    """TASK-024: GET /api/todos returns newest first by default."""
+
+    def test_default_order_newest_first(self, client: TestClient):
+        """Create 3 todos and verify default order is newest first."""
+        for title in ["First", "Second", "Third"]:
+            client.post("/api/todos", json={"title": title})
+            time.sleep(0.01)
+        response = client.get("/api/todos")
+        titles = [t["title"] for t in response.json()]
+        assert titles == ["Third", "Second", "First"]
+
+
+class TestGetTodoById:
+    """TASK-026: GET /api/todos/{id} returns a single todo."""
+
+    def test_get_by_id_returns_200(self, client: TestClient):
+        create_resp = client.post("/api/todos", json={"title": "Find me"})
+        todo_id = create_resp.json()["id"]
+        response = client.get(f"/api/todos/{todo_id}")
+        assert response.status_code == 200
+
+    def test_get_by_id_returns_correct_todo(self, client: TestClient):
+        create_resp = client.post("/api/todos", json={"title": "Find me"})
+        todo_id = create_resp.json()["id"]
+        response = client.get(f"/api/todos/{todo_id}")
+        data = response.json()
+        assert data["id"] == todo_id
+        assert data["title"] == "Find me"
+        assert data["completed"] is False
+
+    def test_get_by_id_has_timestamps(self, client: TestClient):
+        create_resp = client.post("/api/todos", json={"title": "Timestamps"})
+        todo_id = create_resp.json()["id"]
+        response = client.get(f"/api/todos/{todo_id}")
+        data = response.json()
+        assert "created_at" in data
+        assert "updated_at" in data
+
+
+class TestGetTodoInvalidId:
+    """TASK-028: GET /api/todos/{id} with invalid id format."""
+
+    def test_string_id_returns_422(self, client: TestClient):
+        response = client.get("/api/todos/abc")
+        assert response.status_code == 422
+
+    def test_float_id_returns_422(self, client: TestClient):
+        response = client.get("/api/todos/1.5")
+        assert response.status_code == 422

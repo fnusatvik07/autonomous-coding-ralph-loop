@@ -107,6 +107,15 @@ Every task MUST have a `complexity`:
 - 2-15 acceptance criteria (verification steps)
 - Real, runnable test_command
 
+**test_command RULES:**
+- MUST be relative commands (e.g., `pytest tests/test_crud.py -v`), NEVER absolute paths
+- NEVER include `cd /some/path` or `source .venv/bin/activate` — the system handles working directory
+- MUST collect at least 1 test. Commands like `echo ok` are NOT valid test commands
+- Good: `pytest tests/test_create.py -v`
+- Good: `python -c "from app.models import TodoCreate; print('OK')"`
+- Bad: `cd /Users/foo/project && pytest tests/`
+- Bad: `echo "Test not yet created"`
+
 ### CRITICAL INSTRUCTIONS
 
 **IT IS CATASTROPHIC TO HAVE TOO FEW TASKS.**

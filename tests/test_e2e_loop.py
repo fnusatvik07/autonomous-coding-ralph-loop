@@ -187,16 +187,55 @@ class TestE2EQAFailAndHeal:
         assert task1.status == TaskStatus.PASSED
 
 
-class TestE2EHealerExhaustion:
+class TestE2EFixerExhaustion:
     @pytest.mark.asyncio
-    async def test_all_heal_attempts_fail(self, workspace):
+    async def test_all_fix_attempts_fail_marks_blocked(self, workspace):
+        """Phase 2: fixer marks BLOCKED after max attempts (not FAILED).
+
+        Uses a complex feature so the smart gate triggers QA + fixer path.
+        """
         ws = str(workspace)
+        # Build a PRD with a COMPLEX feature (integration + 5 criteria → triggers review)
+        complex_prd = {
+            "project_name": "e2e-test", "branch_name": "ralph/e2e",
+            "description": "E2E test project",
+            "features": [
+                {
+                    "id": "FEAT-001", "title": "Auth Integration", "priority": 1,
+                    "tasks": [
+                        {"id": "TASK-001", "category": "integration", "complexity": "complex",
+                         "title": "Auth middleware integration",
+                         "description": "Multi-file security integration with token validation",
+                         "acceptance_criteria": ["token works", "expired rejected", "missing rejected", "refresh works", "audit logged"],
+                         "status": "pending", "test_command": "pytest -v", "notes": ""},
+                    ],
+                },
+                {
+                    "id": "FEAT-002", "title": "Tests", "priority": 2,
+                    "tasks": [
+                        {"id": "TASK-002", "category": "quality", "complexity": "simple",
+                         "title": "Add tests", "acceptance_criteria": ["test exists", "pytest passes"],
+                         "status": "pending", "test_command": "pytest -v", "notes": ""},
+                    ],
+                },
+            ],
+        }
+        spec_resp = AgentResult(success=True, final_response="# Spec\nComplex test.", cost_usd=0.01)
+        prd_resp = AgentResult(
+            success=True,
+            final_response=f"```json\n{json.dumps(complex_prd, indent=2)}\n```",
+            cost_usd=0.01,
+        )
         responses = [
-            [_spec_only_response(), _spec_response(ws)],
+            [spec_resp, prd_resp],
+            # FEAT-001 (complex → reviewed path): code ok, QA fails, 3 fix attempts all fail
             [_coding_ok("TASK-001")], [_qa_fail(ws)],
             [_healer_ok()], [_qa_fail(ws)],
             [_healer_ok()], [_qa_fail(ws)],
-            [_coding_ok("TASK-002")], [_qa_pass(ws)],
+            [_healer_ok()], [_qa_fail(ws)],
+            # Feature review (won't run since task blocked)
+            # FEAT-002 (simple → fast path)
+            [_coding_ok("TASK-002")],
         ]
         loop, mock_create = _make_loop(workspace, responses)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
@@ -204,7 +243,7 @@ class TestE2EHealerExhaustion:
             await loop.run("Build something")
         prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
-        assert task1.status == TaskStatus.FAILED
+        assert task1.status == TaskStatus.BLOCKED
 
 
 class TestE2EBlocked:

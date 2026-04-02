@@ -25,6 +25,8 @@ PRD_SYSTEM_PROMPT = _load("prd_system")
 CODING_SYSTEM_PROMPT = _load("coding")
 QA_SYSTEM_PROMPT = _load("qa_system")
 HEALER_SYSTEM_PROMPT = _load("healer")
+REVIEWER_SYSTEM_PROMPT = _load("reviewer")
+SPEC_REVIEWER_SYSTEM_PROMPT = _load("spec_reviewer")
 
 # User templates (lightweight formatters)
 SPEC_USER_TEMPLATE = """\

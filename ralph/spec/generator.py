@@ -87,6 +87,13 @@ async def generate_spec(
 
     console.print(f"  [green]spec.md ready ({spec_path.stat().st_size} bytes)[/green]")
 
+    # Step 1.5: Adversarial spec review (max 2 cycles)
+    # Skip for tiny specs (mock/test) — only review real specs (>500 chars)
+    if spec_path.stat().st_size > 500:
+        from ralph.spec.reviewer import review_and_revise_spec
+        console.print("[bold cyan]Step 1.5: Adversarial spec review...[/bold cyan]")
+        await review_and_revise_spec(spec_path, provider, workspace_dir)
+
     # Step 2: Generate prd.json from spec.md
     if not prd_path.exists():
         console.print("[bold cyan]Step 2/2: Generating task list (prd.json)...[/bold cyan]")

@@ -20,10 +20,14 @@ cat .ralph/spec.md | head -100
 # 4. Read the task list to see all work
 cat .ralph/prd.json | head -80
 
-# 5. Read progress notes from previous sessions
+# 5. Read progress — especially "Current State" and "Codebase Patterns"
 cat .ralph/progress.md
 
-# 6. Read guardrails (known pitfalls)
+# The "Current State" section shows: what files exist, test count, completion %
+# The "Codebase Patterns" section shows: conventions to follow (frameworks, patterns, naming)
+# The "Iteration Log" shows: what previous agents built, what failed, why
+
+# 6. Read guardrails (known pitfalls — DO NOT repeat these mistakes)
 cat .ralph/guardrails.md
 
 # 7. Check recent git history
@@ -116,7 +120,17 @@ Tests must:
 **CRITICAL:** You MUST verify by ACTUALLY RUNNING the tests, not just
 reading the code and assuming it works.
 
-**Do this in order:**
+**Step 7a: VERIFY FILES EXIST (before anything else)**
+
+After writing any file, ALWAYS verify it was actually saved:
+```bash
+ls -la path/to/file_you_just_wrote.py
+cat path/to/file_you_just_wrote.py | head -5
+```
+If a file you wrote does NOT exist on disk, write it again.
+The Write tool can silently fail — NEVER trust it without verifying.
+
+**Step 7b: Run tests in order:**
 
 1. Run the task's specific `test_command`:
 ```bash
@@ -134,9 +148,11 @@ python -m pytest tests/test_books.py -v
 python -m pytest tests/ -v --tb=short
 ```
 
-4. Fix anything that fails, then re-verify from scratch.
+4. Check that tests actually collected >0 tests. "0 collected" = failure.
 
-**ONLY proceed to Step 8 after ALL tests pass.**
+5. Fix anything that fails, then re-verify from scratch.
+
+**ONLY proceed to Step 8 after ALL tests pass AND you verified files exist.**
 
 ### STEP 8: UPDATE prd.json (CAREFULLY!)
 

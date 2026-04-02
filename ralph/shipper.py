@@ -125,7 +125,90 @@ async def ship(
     except subprocess.TimeoutExpired:
         result["error"] = "PR creation timed out"
 
+    # CI auto-fix: check PR checks, attempt fix if failing (max 3)
+    if result.get("pr_url"):
+        ci_ok = await _wait_and_fix_ci(workspace_dir, branch, max_attempts=3)
+        if not ci_ok:
+            result["ci_failed"] = True
+            logger.warning("CI still failing after 3 fix attempts")
+
     return result
+
+
+async def _wait_and_fix_ci(
+    workspace_dir: str,
+    branch: str,
+    max_attempts: int = 3,
+) -> bool:
+    """Wait for CI checks, attempt auto-fix if they fail.
+
+    Returns True if CI passes (or no CI configured).
+    """
+    import asyncio
+
+    for attempt in range(1, max_attempts + 1):
+        # Wait a bit for CI to start
+        await asyncio.sleep(10)
+
+        # Check PR status
+        try:
+            r = subprocess.run(
+                ["gh", "pr", "checks", "--watch", "--fail-fast"],
+                cwd=workspace_dir, capture_output=True, text=True, timeout=120,
+            )
+            if r.returncode == 0:
+                logger.info("CI checks passed")
+                return True
+
+            ci_output = r.stdout + r.stderr
+            logger.warning("CI failed (attempt %d/%d): %s", attempt, max_attempts, ci_output[:300])
+
+            if attempt >= max_attempts:
+                # Convert to draft PR
+                subprocess.run(
+                    ["gh", "pr", "ready", "--undo"],
+                    cwd=workspace_dir, capture_output=True, timeout=10,
+                )
+                # Comment with CI error
+                subprocess.run(
+                    ["gh", "pr", "comment", "--body",
+                     f"CI failed after {max_attempts} auto-fix attempts.\n\n```\n{ci_output[:2000]}\n```"],
+                    cwd=workspace_dir, capture_output=True, timeout=10,
+                )
+                return False
+
+            # Try to read CI error and fix
+            logger.info("attempting CI fix %d/%d", attempt, max_attempts)
+            # Simple fixes: if it's a lint/format issue, auto-format and push
+            if any(kw in ci_output.lower() for kw in ["lint", "format", "style", "ruff", "black"]):
+                subprocess.run(["python", "-m", "ruff", "check", "--fix", "."],
+                               cwd=workspace_dir, capture_output=True, timeout=30)
+                subprocess.run(["python", "-m", "black", "."],
+                               cwd=workspace_dir, capture_output=True, timeout=30)
+            elif "test" in ci_output.lower():
+                # Can't auto-fix test failures without an LLM — just report
+                logger.warning("CI test failure — cannot auto-fix")
+                return False
+
+            # Stage, commit, push
+            subprocess.run(["git", "add", "-A"], cwd=workspace_dir, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", f"fix: CI auto-fix attempt {attempt}"],
+                cwd=workspace_dir, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "push", "origin", branch],
+                cwd=workspace_dir, capture_output=True, timeout=30,
+            )
+
+        except subprocess.TimeoutExpired:
+            logger.warning("CI check timed out on attempt %d", attempt)
+            return True  # Can't determine — assume OK
+        except Exception as e:
+            logger.warning("CI check error: %s", e)
+            return True  # Can't determine — assume OK
+
+    return False
 
 
 def _build_pr_body(

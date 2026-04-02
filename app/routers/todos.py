@@ -96,3 +96,14 @@ def update_todo(
         created_at=updated_row["created_at"],
         updated_at=updated_row["updated_at"],
     )
+
+
+@router.delete("/todos/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(todo_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
+    """Delete a todo item by ID. Returns 204 No Content on success, 404 if not found."""
+    row = db.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+
+    db.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    db.commit()

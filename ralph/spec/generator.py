@@ -20,6 +20,7 @@ from ralph.prompts.templates import (
     PRD_SYSTEM_PROMPT, PRD_USER_TEMPLATE,
 )
 from ralph.providers.base import BaseProvider
+from ralph.routing import classify_task, Complexity
 
 console = Console()
 
@@ -165,14 +166,30 @@ def load_prd(workspace_dir: str) -> PRD:
 
 
 def _parse_task(t: dict) -> Task:
-    """Parse a task dict into a Task model."""
+    """Parse a task dict into a Task model.
+
+    If complexity is missing or 'simple' (default), auto-classify using
+    heuristics from routing.py so the smart gate works without LLM help.
+    """
+    raw_complexity = t.get("complexity", "")
+    title = t.get("title", "")
+    description = t.get("description", "")
+    criteria = t.get("acceptance_criteria", [])
+
+    # Auto-populate complexity if not explicitly set by the LLM
+    if raw_complexity in ("", "simple"):
+        classified = classify_task(title, description, criteria)
+        complexity = classified.value
+    else:
+        complexity = raw_complexity
+
     return Task(
         id=t["id"],
         category=t.get("category", "functional"),
-        complexity=t.get("complexity", "simple"),
-        title=t.get("title", ""),
-        description=t.get("description", ""),
-        acceptance_criteria=t.get("acceptance_criteria", []),
+        complexity=complexity,
+        title=title,
+        description=description,
+        acceptance_criteria=criteria,
         status=TaskStatus(t.get("status", "pending")),
         test_command=t.get("test_command", ""),
         notes=t.get("notes", ""),

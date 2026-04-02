@@ -118,10 +118,9 @@ def _make_loop(workspace, responses, **overrides):
 
     def mock_create(config, model_override=""):
         idx = min(call_count[0], len(responses) - 1) if responses else 0
-        mock = MockProvider(
-            responses=[responses[idx]] if idx < len(responses) else [],
-            workspace_dir=ws,
-        )
+        item = responses[idx] if idx < len(responses) else []
+        resps = item if isinstance(item, list) else [item]
+        mock = MockProvider(responses=resps, workspace_dir=ws)
         call_count[0] += 1
         return mock
 
@@ -129,7 +128,7 @@ def _make_loop(workspace, responses, **overrides):
         provider="claude-sdk", model="mock",
         workspace_dir=workspace, max_iterations=10,
         max_healer_attempts=2, max_incomplete_retries=2,
-        session_timeout_seconds=60,
+        session_timeout_seconds=60, enable_reflexion=False,
     )
     defaults.update(overrides)
     config = Config(**defaults)
@@ -174,16 +173,16 @@ class TestE2EQAFailAndHeal:
     async def test_qa_fails_healer_fixes(self, workspace):
         ws = str(workspace)
         responses = [
-            _spec_response(ws),
-            _coding_ok("TASK-001"), _qa_fail(ws),
-            _healer_ok(), _qa_pass(ws),
-            _coding_ok("TASK-002"), _qa_pass(ws),
+            [_spec_only_response(), _spec_response(ws)],
+            [_coding_ok("TASK-001")], [_qa_fail(ws)],
+            [_healer_ok()], [_qa_pass(ws)],
+            [_coding_ok("TASK-002")], [_qa_pass(ws)],
         ]
         loop, mock_create = _make_loop(workspace, responses)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build something")
-        prd = load_prd(ws)
+        prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
         assert task1.status == TaskStatus.PASSED
 
@@ -193,17 +192,17 @@ class TestE2EHealerExhaustion:
     async def test_all_heal_attempts_fail(self, workspace):
         ws = str(workspace)
         responses = [
-            _spec_response(ws),
-            _coding_ok("TASK-001"), _qa_fail(ws),
-            _healer_ok(), _qa_fail(ws),
-            _healer_ok(), _qa_fail(ws),
-            _coding_ok("TASK-002"), _qa_pass(ws),
+            [_spec_only_response(), _spec_response(ws)],
+            [_coding_ok("TASK-001")], [_qa_fail(ws)],
+            [_healer_ok()], [_qa_fail(ws)],
+            [_healer_ok()], [_qa_fail(ws)],
+            [_coding_ok("TASK-002")], [_qa_pass(ws)],
         ]
         loop, mock_create = _make_loop(workspace, responses)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build something")
-        prd = load_prd(ws)
+        prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
         assert task1.status == TaskStatus.FAILED
 
@@ -212,12 +211,15 @@ class TestE2EBlocked:
     @pytest.mark.asyncio
     async def test_blocked_task_logged(self, workspace):
         ws = str(workspace)
-        responses = [_spec_response(ws), _blocked("TASK-001")]
+        responses = [
+            [_spec_only_response(), _spec_response(ws)],
+            [_blocked("TASK-001")],
+        ]
         loop, mock_create = _make_loop(workspace, responses, max_iterations=2)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build something")
-        rails = get_guardrails(ws)
+        rails = get_guardrails(loop.run_dir)
         assert "missing db" in rails
 
 
@@ -225,12 +227,15 @@ class TestE2ESessionFailure:
     @pytest.mark.asyncio
     async def test_provider_failure_does_not_crash(self, workspace):
         ws = str(workspace)
-        responses = [_spec_response(ws), _session_error(), _session_error()]
+        responses = [
+            [_spec_only_response(), _spec_response(ws)],
+            [_session_error()], [_session_error()], [_session_error()],
+        ]
         loop, mock_create = _make_loop(workspace, responses, max_iterations=3, max_incomplete_retries=2)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build something")
-        progress = get_progress_summary(ws)
+        progress = get_progress_summary(loop.run_dir)
         assert "SESSION_ERROR" in progress or "INCOMPLETE" in progress
 
 
@@ -239,12 +244,15 @@ class TestE2EIncompleteAutoFail:
     async def test_incomplete_task_auto_fails_after_retries(self, workspace):
         ws = str(workspace)
         no_signal = AgentResult(success=True, final_response="I did some work but no marker", cost_usd=0.01)
-        responses = [_spec_response(ws), no_signal, no_signal, no_signal]
+        responses = [
+            [_spec_only_response(), _spec_response(ws)],
+            [no_signal], [no_signal], [no_signal], [no_signal],
+        ]
         loop, mock_create = _make_loop(workspace, responses, max_iterations=5, max_incomplete_retries=2)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build something")
-        prd = load_prd(ws)
+        prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
         assert task1.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)
 
@@ -253,12 +261,20 @@ class TestE2EExistingPRD:
     @pytest.mark.asyncio
     async def test_resume_skips_spec_gen(self, workspace_with_prd):
         ws = str(workspace_with_prd)
-        responses = [_coding_ok("TASK-001"), _qa_pass(ws)]
+        responses = [
+            [_coding_ok("TASK-001")], [_qa_pass(ws)],
+        ]
         loop, mock_create = _make_loop(workspace_with_prd, responses, max_iterations=2)
+        # Pre-seed the run directory with the existing PRD so spec gen is skipped
+        run_ralph_dir = Path(ws) / "runs" / f"ralph_{loop.run_id}" / ".ralph"
+        run_ralph_dir.mkdir(parents=True)
+        (run_ralph_dir / "prd.json").write_text(
+            (Path(ws) / ".ralph" / "prd.json").read_text()
+        )
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("")
-        prd = load_prd(ws)
+        prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
         assert task1.status == TaskStatus.PASSED
 
@@ -267,13 +283,15 @@ class TestE2EApprovalGate:
     @pytest.mark.asyncio
     async def test_approval_rejected_stops(self, workspace):
         ws = str(workspace)
-        responses = [_spec_response(ws)]
+        responses = [
+            [_spec_only_response(), _spec_response(ws)],
+        ]
         loop, mock_create = _make_loop(workspace, responses, approve_spec=True)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None), \
              patch.object(RalphLoop, "_ask_approval", return_value=False):
             await loop.run("Build something")
-        progress = get_progress_summary(ws)
+        progress = get_progress_summary(loop.run_dir)
         assert "TASK" not in progress or "Iteration" not in progress
 
 
@@ -288,12 +306,20 @@ class TestE2EBudgetExhaustion:
                      "title": "X", "description": "d",
                      "acceptance_criteria": ["ok"], "status": "pending",
                      "test_command": "", "notes": ""},
+                    {"id": "T-2", "category": "functional", "complexity": "simple",
+                     "title": "Y", "description": "d",
+                     "acceptance_criteria": ["ok"], "status": "pending",
+                     "test_command": "", "notes": ""},
                 ]},
             ],
         }
-        expensive = AgentResult(success=True, final_response=f"MOCK_WRITE:.ralph/prd.json:{json.dumps(prd)}", cost_usd=0.10)
+        spec_resp = AgentResult(success=True, final_response="# Spec\nBudget test.", cost_usd=0.01)
+        prd_resp = AgentResult(success=True, final_response=f"```json\n{json.dumps(prd, indent=2)}\n```", cost_usd=0.01)
         coding = AgentResult(success=True, final_response="<ralph:task_complete>T-1</ralph:task_complete>", cost_usd=0.50)
-        responses = [expensive, coding]
+        responses = [
+            [spec_resp, prd_resp],
+            [coding], [_qa_pass(ws)],
+        ]
         loop, mock_create = _make_loop(workspace, responses, max_budget_usd=0.05)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
@@ -327,10 +353,12 @@ class TestE2ECostTracking:
                 ]},
             ],
         }
+        spec_resp = AgentResult(success=True, final_response="# Spec\nCost test.", cost_usd=0.01)
+        prd_resp = AgentResult(success=True, final_response=f"```json\n{json.dumps(prd, indent=2)}\n```", cost_usd=0.02)
+        coding = AgentResult(success=True, final_response="<ralph:task_complete>T-1</ralph:task_complete>", cost_usd=0.05)
         responses = [
-            AgentResult(success=True, final_response=f"MOCK_WRITE:.ralph/prd.json:{json.dumps(prd)}", cost_usd=0.01),
-            AgentResult(success=True, final_response="<ralph:task_complete>T-1</ralph:task_complete>", cost_usd=0.05),
-            AgentResult(success=True, final_response=f"MOCK_WRITE:.ralph/qa_result.json:{json.dumps({'passed':True,'issues':[]})}", cost_usd=0.03),
+            [spec_resp, prd_resp],
+            [coding], [_qa_pass(ws)],
         ]
         loop, mock_create = _make_loop(workspace, responses, max_iterations=5)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \

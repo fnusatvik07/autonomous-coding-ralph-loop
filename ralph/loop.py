@@ -35,8 +35,8 @@ from ralph.observability import (
 from ralph.checkpoint import cleanup_checkpoints, create_checkpoint, rollback_to_checkpoint
 from ralph.formatting import auto_format
 from ralph.indexer import index_codebase
-from ralph.github_pr import create_pull_request, generate_pr_body, is_gh_available
-from ralph.prompts.templates import CODING_SYSTEM_PROMPT, CODING_USER_TEMPLATE
+from ralph.prompts.templates import CODING_SYSTEM_PROMPT, CODING_USER_TEMPLATE, FEATURE_CODING_USER_TEMPLATE
+from ralph.shipper import ship as shipper_ship
 from ralph.providers import create_provider
 from ralph.providers.base import BaseProvider
 from ralph.qa.healer import run_healer
@@ -85,14 +85,13 @@ def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
     return create_provider(config.provider, **kwargs)
 
 
-def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float, task) -> None:
+def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float, feature) -> None:
     """Print a rich iteration header with progress bar."""
     completed = len(prd.completed_tasks)
     total = len(prd.tasks)
     failed = total - completed - len(prd.pending_tasks)
     pct = prd.progress_pct
 
-    # Progress bar
     bar_width = 30
     filled = int(bar_width * pct / 100)
     bar = f"[green]{'█' * filled}[/green][dim]{'░' * (bar_width - filled)}[/dim]"
@@ -107,9 +106,11 @@ def _print_iteration_header(prd: PRD, iteration: int, max_iter: int, cost: float
         f"  │  [dim]${cost:.2f}[/dim]"
     )
     console.print(
-        f"  [bold]► {task.id}[/bold]: {task.title}"
-        f"  [dim]({task.category} │ {task.complexity} │ {len(task.acceptance_criteria)} criteria)[/dim]"
+        f"  [bold]► {feature.id}[/bold]: {feature.title}"
+        f"  [dim]({len(feature.pending_tasks)} tasks │ {feature.max_complexity})[/dim]"
     )
+    for t in feature.pending_tasks:
+        console.print(f"    {t.id}: {t.title} [dim]({t.complexity})[/dim]")
     console.print(f"[bold]{'─' * 70}[/bold]")
 
 
@@ -280,7 +281,6 @@ class RalphLoop:
 
     async def _main_loop(self, prd: PRD) -> None:
         for iteration in range(1, self.config.max_iterations + 1):
-            # Budget check
             if self._budget_exceeded():
                 break
 
@@ -290,12 +290,11 @@ class RalphLoop:
                 console.print(f"[red]PRD error: {e}[/red]")
                 break
 
-            next_task = prd.get_next_task()
-            if not next_task:
+            feature = prd.get_next_feature()
+            if not feature:
                 cleanup_checkpoints(self.workspace_dir)
-                await self._maybe_create_pr(prd, iteration - 1)
+                await self._ship(prd)
                 completed = len(prd.completed_tasks)
-                total = len(prd.tasks)
                 console.print()
                 console.print(f"[bold green]{'═' * 70}[/bold green]")
                 console.print(f"  [bold green]ALL {completed} TASKS COMPLETE![/bold green]")
@@ -305,27 +304,28 @@ class RalphLoop:
                              self.run_id, iteration - 1, self.cumulative_cost)
                 return
 
-            _print_iteration_header(prd, iteration, self.config.max_iterations, self.cumulative_cost, next_task)
-            logger.info("iteration %d: %s - %s", iteration, next_task.id, next_task.title)
+            pending_tasks = feature.pending_tasks
+            _print_iteration_header(prd, iteration, self.config.max_iterations, self.cumulative_cost, feature)
+            logger.info("iteration %d: feature %s (%d tasks)", iteration, feature.id, len(pending_tasks))
 
-            # Git checkpoint before starting task (rollback point)
-            checkpoint_tag = create_checkpoint(self.workspace_dir, next_task.id, iteration)
+            # Git checkpoint before feature (rollback point)
+            checkpoint_tag = create_checkpoint(self.workspace_dir, feature.id, iteration)
 
-            # Route to optimal model for this task's complexity
+            # Route model based on feature's max complexity
             routed_model = ""
             if self.config.auto_route_models:
                 routed_model = get_model_for_task(
-                    next_task.title, next_task.description,
-                    next_task.acceptance_criteria, self.config.provider,
+                    feature.title, "",
+                    [ac for t in pending_tasks for ac in t.acceptance_criteria],
+                    self.config.provider,
                 )
                 if routed_model != self.config.model:
                     console.print(f"  [dim]Routed to: {routed_model}[/dim]")
 
             provider = _create_provider(self.config, model_override=routed_model)
 
-            # Build enriched system prompt: base + codebase index + reflections
+            # Build enriched system prompt
             system_prompt = CODING_SYSTEM_PROMPT
-            # Inject codebase index for large repos (helps agent orient faster)
             codebase_idx = index_codebase(self.workspace_dir, max_tokens=3000)
             if codebase_idx and len(codebase_idx) > 100:
                 system_prompt += f"\n\n{codebase_idx}"
@@ -333,24 +333,41 @@ class RalphLoop:
             if reflections:
                 system_prompt += f"\n\n{reflections}"
 
-            # Coding session with timeout
+            # Build feature-level user message with ALL pending tasks
+            if len(pending_tasks) == 1:
+                # Single task — use simple template (backward compat with mocks)
+                user_message = CODING_USER_TEMPLATE.format(
+                    task_id=pending_tasks[0].id,
+                    task_title=pending_tasks[0].title,
+                )
+            else:
+                tasks_list = "\n".join(
+                    f"{i}. **{t.id}** — {t.title}\n"
+                    f"   {t.description}\n"
+                    f"   Acceptance: {', '.join(t.acceptance_criteria[:3])}\n"
+                    f"   Test: `{t.test_command or 'pytest'}`"
+                    for i, t in enumerate(pending_tasks, 1)
+                )
+                user_message = FEATURE_CODING_USER_TEMPLATE.format(
+                    feature_id=feature.id,
+                    feature_title=feature.title,
+                    tasks_list=tasks_list,
+                )
+
+            # Coding session — one session for the entire feature
             coding_result = await self._run_with_timeout(
                 provider.run_session(
                     system_prompt=system_prompt,
-                    user_message=CODING_USER_TEMPLATE.format(
-                        task_id=next_task.id,
-                        task_title=next_task.title,
-                    ),
+                    user_message=user_message,
                     max_turns=self.config.max_turns_per_session,
                     on_text=self.on_text,
                     on_tool=self.on_tool,
                 ),
-                label=f"coding {next_task.id}",
+                label=f"coding {feature.id}",
             )
             self.cumulative_cost += coding_result.cost_usd
-            log_session(self.run_dir, self.run_id, iteration, "coding", next_task.id, coding_result)
+            log_session(self.run_dir, self.run_id, iteration, "coding", feature.id, coding_result)
 
-            # Session summary
             console.print(
                 f"  [dim]───── Coding: ${coding_result.cost_usd:.4f} │ "
                 f"{coding_result.tool_calls_made} tools │ "
@@ -360,7 +377,8 @@ class RalphLoop:
             # Handle session failure
             if not coding_result.success:
                 console.print(f"  [bold red]✗ Session FAILED[/bold red]: {coding_result.error[:200]}")
-                self._handle_incomplete(prd, next_task, iteration, f"Session error: {coding_result.error[:300]}")
+                for t in pending_tasks:
+                    self._handle_incomplete(prd, t, iteration, f"Session error: {coding_result.error[:300]}")
                 await self._inter_delay()
                 continue
 
@@ -369,42 +387,47 @@ class RalphLoop:
             if fmt_ok and "reformatted" in fmt_out.lower():
                 console.print("  [dim]Auto-formatted[/dim]")
 
-            # Detect completion
-            completed = _detect_completion(coding_result.final_response, self.run_dir, next_task.id)
+            # Check which tasks in the feature were completed
+            any_completed = False
+            for task in pending_tasks:
+                completed = _detect_completion(coding_result.final_response, self.run_dir, task.id)
 
-            if completed:
-                console.print(f"  [cyan]Running QA Sentinel...[/cyan]")
-                qa_result = await self._run_qa(next_task, iteration)
+                if completed:
+                    any_completed = True
+                    console.print(f"  [cyan]QA: {task.id}...[/cyan]")
+                    qa_result = await self._run_qa(task, iteration)
 
-                if qa_result.passed:
-                    console.print(f"  [bold green]✓ QA PASSED[/bold green] — {next_task.id}")
-                    self._complete_task(prd, next_task, iteration)
-                else:
-                    console.print(f"  [bold red]✗ QA FAILED[/bold red] — {'; '.join(qa_result.issues[:2])}")
-                    console.print(f"  [yellow]Starting Healer...[/yellow]")
-                    healed = await self._run_healer_loop(next_task, qa_result, iteration)
-                    if healed:
-                        console.print(f"  [bold green]✓ Healer FIXED[/bold green] — {next_task.id}")
-                        self._complete_task(prd, next_task, iteration, "(after healing)")
+                    if qa_result.passed:
+                        console.print(f"  [bold green]✓ QA PASSED[/bold green] — {task.id}")
+                        self._complete_task(prd, task, iteration)
                     else:
-                        self._fail_task(prd, next_task, iteration, qa_result)
-                        # Rollback to checkpoint on final failure
-                        if checkpoint_tag:
-                            console.print(f"  [dim]Rolling back to checkpoint...[/dim]")
-                            rollback_to_checkpoint(self.workspace_dir, checkpoint_tag)
-                        # Reflexion: learn from QA failure
-                        if self.config.enable_reflexion:
-                            await self._reflect(next_task, iteration, "QA_FAILED",
-                                                "; ".join(qa_result.issues[:5]))
-            else:
+                        console.print(f"  [bold red]✗ QA FAILED[/bold red] — {task.id}: {'; '.join(qa_result.issues[:2])}")
+                        console.print(f"  [yellow]Healer: {task.id}...[/yellow]")
+                        healed = await self._run_healer_loop(task, qa_result, iteration)
+                        if healed:
+                            console.print(f"  [bold green]✓ Healer FIXED[/bold green] — {task.id}")
+                            self._complete_task(prd, task, iteration, "(after healing)")
+                        else:
+                            self._fail_task(prd, task, iteration, qa_result)
+                            if self.config.enable_reflexion:
+                                await self._reflect(task, iteration, "QA_FAILED",
+                                                    "; ".join(qa_result.issues[:5]))
+                else:
+                    blocked = _detect_blocked(coding_result.final_response)
+                    if blocked and task.id in str(blocked):
+                        console.print(f"  [red]BLOCKED: {task.id} — {blocked[:80]}[/red]")
+                        add_guardrail(self.run_dir, sign=blocked, context=task.title)
+
+            if not any_completed:
+                # No tasks completed — count as incomplete for the first pending task
+                first = pending_tasks[0]
                 blocked = _detect_blocked(coding_result.final_response)
                 if blocked:
-                    console.print(f"  [red]BLOCKED: {blocked[:100]}[/red]")
-                    add_guardrail(self.run_dir, sign=blocked, context=next_task.title)
-                else:
-                    console.print(f"  [yellow]No completion signal for {next_task.id}[/yellow]")
-
-                self._handle_incomplete(prd, next_task, iteration, blocked or "No completion signal")
+                    add_guardrail(self.run_dir, sign=blocked, context=feature.title)
+                self._handle_incomplete(prd, first, iteration, blocked or "No completion signal")
+                # Rollback if nothing was achieved
+                if checkpoint_tag:
+                    rollback_to_checkpoint(self.workspace_dir, checkpoint_tag)
 
             await self._inter_delay()
 
@@ -458,7 +481,7 @@ class RalphLoop:
             log_task_transition(self.run_dir, self.run_id, task.id, "pending", "failed", iteration)
 
     async def _ensure_prd(self, task_description: str) -> PRD:
-        prd_path = Path(self.run_dir) / "prd.json"
+        prd_path = Path(self.run_dir) / RALPH_DIR / "prd.json"
         if prd_path.exists():
             console.print("[dim]Loading existing PRD...[/dim]")
             try:
@@ -562,31 +585,22 @@ class RalphLoop:
         except Exception as e:
             logger.warning("reflection failed (non-critical): %s", e)
 
-    async def _maybe_create_pr(self, prd: PRD, iterations: int) -> None:
-        """Create a GitHub PR if gh CLI is available and remote is configured."""
-        if not is_gh_available():
-            return
+    async def _ship(self, prd: PRD) -> None:
+        """Push to branch and create PR via shipper agent."""
         try:
-            completed = [
-                {"id": t.id, "title": t.title}
-                for t in prd.tasks if t.status == TaskStatus.PASSED
-            ]
-            body = generate_pr_body(
-                project_name=prd.project_name,
-                tasks_completed=completed,
-                total_cost=self.cumulative_cost,
-                total_tests=0,  # Could count from test suite
-            )
-            pr_url = await create_pull_request(
+            result = await shipper_ship(
                 workspace_dir=self.workspace_dir,
-                title=f"feat: {prd.project_name} ({len(completed)} tasks)",
-                body=body,
-                branch=prd.branch_name,
+                prd=prd,
+                cumulative_cost=self.cumulative_cost,
             )
-            if pr_url:
-                console.print(f"  [bold green]PR created: {pr_url}[/bold green]")
+            if result.get("pushed"):
+                console.print(f"  [green]Pushed to origin/{prd.branch_name}[/green]")
+            if result.get("pr_url"):
+                console.print(f"  [bold green]PR created: {result['pr_url']}[/bold green]")
+            if result.get("error"):
+                console.print(f"  [dim]Ship: {result['error']}[/dim]")
         except Exception as e:
-            logger.debug("PR creation skipped: %s", e)
+            logger.debug("shipping skipped: %s", e)
 
     async def _inter_delay(self) -> None:
         console.print(f"[dim]Next in {INTER_ITERATION_DELAY}s (Ctrl+C to stop)...[/dim]")

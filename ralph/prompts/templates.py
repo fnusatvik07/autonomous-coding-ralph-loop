@@ -63,6 +63,22 @@ Follow the 10-step protocol. Begin with Step 1 (Get Your Bearings).
 Output <ralph:task_complete>{task_id}</ralph:task_complete> when verified.
 """
 
+FEATURE_CODING_USER_TEMPLATE = """\
+Start a new coding session for Feature: {feature_id} - {feature_title}
+
+## Tasks to complete (in order):
+{tasks_list}
+
+## Instructions
+Follow the 10-step protocol. Begin with Step 1 (Get Your Bearings).
+
+Complete each task in the order listed above. After EACH task:
+1. Write tests and verify they pass
+2. Output <ralph:task_complete>TASK-ID</ralph:task_complete>
+
+Continue to the next task without stopping. Complete ALL tasks in this feature.
+"""
+
 QA_USER_TEMPLATE = """\
 Review changes for: {task_id} - {task_title}
 

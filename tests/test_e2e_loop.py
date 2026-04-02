@@ -19,7 +19,16 @@ from tests.conftest import MockProvider
 
 
 def _spec_response(workspace_dir: str) -> AgentResult:
-    """Mock: generates a v3 hierarchical PRD."""
+    """Mock: generates spec (session 1) and PRD (session 2).
+
+    Returns TWO responses consumed in sequence:
+    - First call: spec.md content (saved by fallback)
+    - Second call: prd.json as JSON in response text (extracted by _extract_json)
+
+    But since the mock returns one response at a time, we return
+    the PRD JSON in the response. generate_spec calls the provider twice
+    (once for spec, once for PRD). The mock pops responses in order.
+    """
     prd = {
         "project_name": "e2e-test", "branch_name": "ralph/e2e",
         "description": "E2E test project",
@@ -44,10 +53,20 @@ def _spec_response(workspace_dir: str) -> AgentResult:
             },
         ],
     }
+    # Return JSON in response text — _extract_json will find it
     return AgentResult(
         success=True,
-        final_response=f"MOCK_WRITE:.ralph/prd.json:{json.dumps(prd)}",
+        final_response=f"Here is the spec.\n\n```json\n{json.dumps(prd, indent=2)}\n```",
         tool_calls_made=5, cost_usd=0.02,
+    )
+
+
+def _spec_only_response() -> AgentResult:
+    """Mock: returns spec content (first session of generate_spec)."""
+    return AgentResult(
+        success=True,
+        final_response="# Spec\n\nA simple project for testing.",
+        tool_calls_made=3, cost_usd=0.01,
     )
 
 
@@ -122,16 +141,31 @@ class TestE2EHappyPath:
     @pytest.mark.asyncio
     async def test_full_loop_two_tasks_pass(self, workspace):
         ws = str(workspace)
+        # generate_spec creates ONE provider that handles BOTH spec + PRD sessions
+        # So the first provider needs TWO responses (spec text + PRD JSON)
+        spec_and_prd = [_spec_only_response(), _spec_response(ws)]
         responses = [
-            _spec_response(ws),
-            _coding_ok("TASK-001"), _qa_pass(ws),
-            _coding_ok("TASK-002"), _qa_pass(ws),
+            spec_and_prd,  # Provider 1: spec gen (2 responses for 2 run_session calls)
+            [_coding_ok("TASK-001")], [_qa_pass(ws)],
+            [_coding_ok("TASK-002")], [_qa_pass(ws)],
         ]
-        loop, mock_create = _make_loop(workspace, responses)
+
+        call_count = [0]
+        def mock_create(config, model_override=""):
+            idx = min(call_count[0], len(responses) - 1) if responses else 0
+            resps = responses[idx] if isinstance(responses[idx], list) else [responses[idx]]
+            mock = MockProvider(responses=resps, workspace_dir=ws)
+            call_count[0] += 1
+            return mock
+
+        config = Config(provider="claude-sdk", model="mock", workspace_dir=workspace,
+                        max_iterations=10, max_healer_attempts=2, max_incomplete_retries=2, session_timeout_seconds=60)
+        loop = RalphLoop(config)
+
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
             await loop.run("Build a hello world project")
-        prd = load_prd(ws)
+        prd = load_prd(loop.run_dir)
         assert prd.progress_pct == 100.0
 
 

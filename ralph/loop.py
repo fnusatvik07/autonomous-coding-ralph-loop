@@ -212,31 +212,25 @@ class RalphLoop:
         run_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir = str(run_dir)
 
-        # State files go in .ralph/ (shared) for agent access
-        # Run directory stores copies for tracking
-        setup_logging(self.workspace_dir)
-        init_progress(self.workspace_dir)
-        init_guardrails(self.workspace_dir)
-        init_reflections(self.workspace_dir)
-        logger.info("ralph loop starting: run=%s provider=%s model=%s",
-                     self.run_id, self.config.provider, self.config.model)
+        # ALL state files go in run directory — nothing in .ralph/ root
+        setup_logging(self.run_dir)
+        init_progress(self.run_dir)
+        init_guardrails(self.run_dir)
+        init_reflections(self.run_dir)
+        logger.info("ralph loop starting: run=%s dir=%s provider=%s model=%s",
+                     self.run_id, self.run_dir, self.config.provider, self.config.model)
+
+        console.print()
+        console.print(f"[bold]Run:[/bold] ralph_{self.run_id}")
+        console.print(f"[bold]Dir:[/bold] {self.run_dir}")
+        console.print()
 
         # ── Step 1: Generate or Load Spec + PRD ──
-        console.print()
         console.print("[bold]Step 1: Specification & Task List[/bold]")
         console.print("[dim]  Generating application spec and breaking it into testable tasks...[/dim]")
         console.print()
 
-        # Generate spec + PRD into run directory, copy to .ralph/ root for agent access
         prd = await self._ensure_prd(task_description)
-
-        # Copy spec + prd to run directory for tracking
-        import shutil
-        for fname in ("spec.md", "prd.json"):
-            src = Path(self.workspace_dir) / RALPH_DIR / fname
-            dst = Path(self.run_dir) / fname
-            if src.exists() and not dst.exists():
-                shutil.copy2(src, dst)
 
         # ── Step 2: Review (if enabled) ──
         if self.config.approve_spec and not self._prd_previously_approved():
@@ -286,7 +280,7 @@ class RalphLoop:
                 break
 
             try:
-                prd = load_prd(self.workspace_dir)
+                prd = load_prd(self.run_dir)
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 console.print(f"[red]PRD error: {e}[/red]")
                 break
@@ -330,7 +324,7 @@ class RalphLoop:
             codebase_idx = index_codebase(self.workspace_dir, max_tokens=3000)
             if codebase_idx and len(codebase_idx) > 100:
                 system_prompt += f"\n\n{codebase_idx}"
-            reflections = get_reflections(self.workspace_dir, max_entries=5)
+            reflections = get_reflections(self.run_dir, max_entries=5)
             if reflections:
                 system_prompt += f"\n\n{reflections}"
 
@@ -349,7 +343,7 @@ class RalphLoop:
                 label=f"coding {next_task.id}",
             )
             self.cumulative_cost += coding_result.cost_usd
-            log_session(self.workspace_dir, self.run_id, iteration, "coding", next_task.id, coding_result)
+            log_session(self.run_dir, self.run_id, iteration, "coding", next_task.id, coding_result)
 
             # Session summary
             console.print(
@@ -371,7 +365,7 @@ class RalphLoop:
                 console.print("  [dim]Auto-formatted[/dim]")
 
             # Detect completion
-            completed = _detect_completion(coding_result.final_response, self.workspace_dir, next_task.id)
+            completed = _detect_completion(coding_result.final_response, self.run_dir, next_task.id)
 
             if completed:
                 console.print(f"  [cyan]Running QA Sentinel...[/cyan]")
@@ -401,7 +395,7 @@ class RalphLoop:
                 blocked = _detect_blocked(coding_result.final_response)
                 if blocked:
                     console.print(f"  [red]BLOCKED: {blocked[:100]}[/red]")
-                    add_guardrail(self.workspace_dir, sign=blocked, context=next_task.title)
+                    add_guardrail(self.run_dir, sign=blocked, context=next_task.title)
                 else:
                     console.print(f"  [yellow]No completion signal for {next_task.id}[/yellow]")
 
@@ -446,7 +440,7 @@ class RalphLoop:
         count = self._incomplete_counts[task.id]
 
         append_progress(
-            self.workspace_dir, iteration=iteration,
+            self.run_dir, iteration=iteration,
             task_id=task.id, task_title=task.title,
             status=f"INCOMPLETE ({count}/{self.config.max_incomplete_retries})",
             notes=notes,
@@ -455,15 +449,15 @@ class RalphLoop:
         if count >= self.config.max_incomplete_retries:
             console.print(f"  [red]{task.id}: max incomplete retries ({count}) - marking FAILED[/red]")
             prd.mark_task(task.id, TaskStatus.FAILED, notes=f"Failed after {count} incomplete attempts")
-            save_prd(prd, self.workspace_dir)
-            log_task_transition(self.workspace_dir, self.run_id, task.id, "pending", "failed", iteration)
+            save_prd(prd, self.run_dir)
+            log_task_transition(self.run_dir, self.run_id, task.id, "pending", "failed", iteration)
 
     async def _ensure_prd(self, task_description: str) -> PRD:
-        prd_path = Path(self.workspace_dir) / RALPH_DIR / "prd.json"
+        prd_path = Path(self.run_dir) / "prd.json"
         if prd_path.exists():
             console.print("[dim]Loading existing PRD...[/dim]")
             try:
-                return load_prd(self.workspace_dir)
+                return load_prd(self.run_dir)
             except (json.JSONDecodeError, KeyError) as e:
                 console.print(f"[yellow]PRD corrupted ({e}), regenerating...[/yellow]")
                 logger.warning("corrupted prd.json: %s", e)
@@ -471,7 +465,7 @@ class RalphLoop:
         if not task_description:
             raise RuntimeError("No PRD and no task description provided. Use 'ralph run' with a task.")
         provider = _create_provider(self.config)
-        return await generate_spec(task_description, provider, self.workspace_dir)
+        return await generate_spec(task_description, provider, self.run_dir)
 
     async def _run_qa(self, task, iteration: int) -> QAResult:
         provider = _create_provider(self.config)
@@ -485,7 +479,7 @@ class RalphLoop:
         self.cumulative_cost += qa.cost_usd
         if qa.cost_usd > 0:
             console.print(f"    [dim]QA: ${qa.cost_usd:.4f} | {qa.duration_ms / 1000:.1f}s[/dim]")
-        log_qa(self.workspace_dir, self.run_id, iteration, task.id, qa)
+        log_qa(self.run_dir, self.run_id, iteration, task.id, qa)
         return qa
 
     async def _run_healer_loop(self, task, qa_result: QAResult, iteration: int) -> bool:
@@ -501,7 +495,7 @@ class RalphLoop:
             )
             if isinstance(healer_result, AgentResult):
                 self.cumulative_cost += healer_result.cost_usd
-                log_session(self.workspace_dir, self.run_id, iteration,
+                log_session(self.run_dir, self.run_id, iteration,
                             f"healer-{attempt}", task.id, healer_result)
 
             provider = _create_provider(self.config)
@@ -511,7 +505,7 @@ class RalphLoop:
             )
             if not isinstance(qa_result, QAResult):
                 qa_result = QAResult(passed=False, issues=["QA timed out after heal"])
-            log_qa(self.workspace_dir, self.run_id, iteration, task.id, qa_result)
+            log_qa(self.run_dir, self.run_id, iteration, task.id, qa_result)
 
             if qa_result.passed:
                 return True
@@ -521,10 +515,10 @@ class RalphLoop:
     def _complete_task(self, prd: PRD, task, iteration: int, suffix: str = "") -> None:
         old_status = task.status.value
         prd.mark_task(task.id, TaskStatus.PASSED)
-        save_prd(prd, self.workspace_dir)
-        log_task_transition(self.workspace_dir, self.run_id, task.id, old_status, "passed", iteration)
+        save_prd(prd, self.run_dir)
+        log_task_transition(self.run_dir, self.run_id, task.id, old_status, "passed", iteration)
         append_progress(
-            self.workspace_dir, iteration=iteration,
+            self.run_dir, iteration=iteration,
             task_id=task.id, task_title=task.title,
             status=f"PASSED {suffix}".strip(),
         )
@@ -536,11 +530,11 @@ class RalphLoop:
         console.print(f"  [red]FAILED: {task.id}[/red]")
         old_status = task.status.value
         prd.mark_task(task.id, TaskStatus.FAILED, notes=f"QA: {'; '.join(qa_result.issues[:3])}")
-        save_prd(prd, self.workspace_dir)
-        log_task_transition(self.workspace_dir, self.run_id, task.id, old_status, "failed", iteration)
-        add_guardrail(self.workspace_dir, sign=f"{task.id} failed: {'; '.join(qa_result.issues[:3])}", context=task.title)
+        save_prd(prd, self.run_dir)
+        log_task_transition(self.run_dir, self.run_id, task.id, old_status, "failed", iteration)
+        add_guardrail(self.run_dir, sign=f"{task.id} failed: {'; '.join(qa_result.issues[:3])}", context=task.title)
         append_progress(
-            self.workspace_dir, iteration=iteration,
+            self.run_dir, iteration=iteration,
             task_id=task.id, task_title=task.title,
             status="FAILED", notes=f"QA: {'; '.join(qa_result.issues[:3])}",
         )
@@ -552,7 +546,7 @@ class RalphLoop:
             provider = _create_provider(self.config)
             console.print(f"  [dim]Reflecting on failure...[/dim]")
             await reflect_on_failure(
-                workspace_dir=self.workspace_dir,
+                workspace_dir=self.run_dir,
                 provider=provider,
                 task_id=task.id,
                 task_title=task.title,
@@ -594,10 +588,10 @@ class RalphLoop:
         await asyncio.sleep(INTER_ITERATION_DELAY)
 
     def _prd_previously_approved(self) -> bool:
-        return (Path(self.workspace_dir) / RALPH_DIR / ".approved").exists()
+        return (Path(self.run_dir) / ".approved").exists()
 
     def _mark_prd_approved(self) -> None:
-        (Path(self.workspace_dir) / RALPH_DIR / ".approved").write_text("approved")
+        (Path(self.run_dir) / ".approved").write_text("approved")
 
     @staticmethod
     def _ask_approval(prompt: str) -> bool:

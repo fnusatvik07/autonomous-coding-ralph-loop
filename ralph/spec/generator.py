@@ -64,33 +64,51 @@ async def generate_spec(
         console.print("[dim]Loading existing PRD...[/dim]")
         return load_prd(workspace_dir)
 
-    console.print("[bold cyan]Generating specification + task list...[/bold cyan]")
-    console.print(f"  Task: {task_description[:120]}...")
-    console.print("  [dim]This may take 5-15 minutes for complex projects.[/dim]")
-
-    result = await provider.run_session(
-        system_prompt=COMBINED_SYSTEM,
-        user_message=COMBINED_USER.format(task_description=task_description),
-        max_turns=200,
-        on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
-    )
-
-    if not result.success:
-        raise RuntimeError(f"Generation failed: {result.error}")
-
+    # Step 1: Generate spec.md
     if not spec_path.exists():
-        spec_path.write_text(result.final_response)
-        console.print("  [dim]Saved spec from response[/dim]")
+        console.print("[bold cyan]Step 1/2: Generating specification (spec.md)...[/bold cyan]")
+        console.print(f"  Task: {task_description[:120]}...")
 
+        result = await provider.run_session(
+            system_prompt=SPEC_SYSTEM_PROMPT,
+            user_message=SPEC_USER_TEMPLATE.format(task_description=task_description),
+            max_turns=50,
+            on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
+        )
+
+        if not result.success:
+            raise RuntimeError(f"Spec generation failed: {result.error}")
+
+        if not spec_path.exists():
+            spec_path.write_text(result.final_response)
+            console.print("  [dim]Saved spec from response[/dim]")
+
+    console.print(f"  [green]spec.md ready ({spec_path.stat().st_size} bytes)[/green]")
+
+    # Step 2: Generate prd.json from spec.md
     if not prd_path.exists():
-        prd_data = _extract_json(result.final_response)
-        if prd_data:
-            prd_path.write_text(json.dumps(prd_data, indent=2))
-            console.print("  [dim]Extracted PRD from response[/dim]")
-        else:
-            raise RuntimeError(
-                "LLM did not create .ralph/prd.json and no JSON found in response."
-            )
+        console.print("[bold cyan]Step 2/2: Generating task list (prd.json)...[/bold cyan]")
+        console.print("  [dim]Reading spec and creating hierarchical feature → task list...[/dim]")
+
+        result = await provider.run_session(
+            system_prompt=PRD_SYSTEM_PROMPT,
+            user_message=PRD_USER_TEMPLATE,
+            max_turns=150,
+            on_tool=lambda name, _: console.print(f"  [dim]{name}[/dim]"),
+        )
+
+        if not result.success:
+            raise RuntimeError(f"PRD generation failed: {result.error}")
+
+        if not prd_path.exists():
+            prd_data = _extract_json(result.final_response)
+            if prd_data:
+                prd_path.write_text(json.dumps(prd_data, indent=2))
+                console.print("  [dim]Extracted PRD from response[/dim]")
+            else:
+                raise RuntimeError(
+                    "LLM did not create .ralph/prd.json and no JSON found in response."
+                )
 
     prd = load_prd(workspace_dir)
     console.print(f"  [green]spec.md: {spec_path.stat().st_size} bytes[/green]")

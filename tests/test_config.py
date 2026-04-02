@@ -29,6 +29,8 @@ class TestConfig:
         env_file = tmp_path / ".env"
         env_file.write_text("")
         monkeypatch.delenv("RALPH_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_SONNET_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_OPUS_MODEL", raising=False)
         c = Config.load(provider="claude-sdk", env_file=str(env_file))
         assert c.model == "claude-sonnet-4-20250514"
         c = Config.load(provider="deep-agents", env_file=str(env_file))

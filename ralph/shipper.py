@@ -128,6 +128,88 @@ async def ship(
     return result
 
 
+async def _wait_and_fix_ci(
+    workspace_dir: str,
+    branch: str,
+    max_attempts: int = 3,
+) -> dict:
+    """Watch CI checks after push, attempt auto-fix for lint/format issues.
+
+    Returns: {"ci_passed": bool, "attempts": int, "converted_to_draft": bool}
+    """
+    result = {"ci_passed": False, "attempts": 0, "converted_to_draft": False}
+
+    if not is_gh_available():
+        return result
+
+    for attempt in range(1, max_attempts + 1):
+        result["attempts"] = attempt
+
+        # Wait for checks to complete (poll up to 120s)
+        try:
+            r = subprocess.run(
+                ["gh", "pr", "checks", "--watch", "--fail-fast"],
+                cwd=workspace_dir, capture_output=True, text=True, timeout=120,
+            )
+            if r.returncode == 0:
+                result["ci_passed"] = True
+                logger.info("CI checks passed on attempt %d", attempt)
+                return result
+
+            # Parse failure output for lint/format issues
+            output = r.stdout + r.stderr
+            if any(kw in output.lower() for kw in ("lint", "format", "style", "ruff", "black", "isort")):
+                logger.info("CI lint/format failure detected, attempting auto-fix (attempt %d)", attempt)
+                # Try auto-fix
+                for cmd in [
+                    ["python", "-m", "ruff", "check", "--fix", "."],
+                    ["python", "-m", "ruff", "format", "."],
+                    ["python", "-m", "black", "."],
+                ]:
+                    try:
+                        subprocess.run(cmd, cwd=workspace_dir, capture_output=True, timeout=30)
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        continue
+
+                # Commit and push fixes
+                try:
+                    subprocess.run(
+                        ["git", "add", "-A"],
+                        cwd=workspace_dir, capture_output=True, check=True,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-m", f"fix: auto-fix lint/format (attempt {attempt})"],
+                        cwd=workspace_dir, capture_output=True, check=True,
+                    )
+                    subprocess.run(
+                        ["git", "push"],
+                        cwd=workspace_dir, capture_output=True, check=True, timeout=30,
+                    )
+                except subprocess.CalledProcessError:
+                    pass
+            else:
+                # Non-lint CI failure — can't auto-fix
+                break
+
+        except subprocess.TimeoutExpired:
+            logger.warning("CI check watch timed out (attempt %d)", attempt)
+            break
+
+    # All attempts exhausted — convert PR to draft
+    if not result["ci_passed"]:
+        try:
+            subprocess.run(
+                ["gh", "pr", "ready", "--undo"],
+                cwd=workspace_dir, capture_output=True, timeout=10,
+            )
+            result["converted_to_draft"] = True
+            logger.info("converted PR to draft after CI failures")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return result
+
+
 def _build_pr_body(
     prd: PRD,
     completed: list,

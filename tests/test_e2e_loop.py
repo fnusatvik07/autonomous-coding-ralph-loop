@@ -187,13 +187,47 @@ class TestE2EQAFailAndHeal:
         assert task1.status == TaskStatus.PASSED
 
 
-class TestE2EHealerExhaustion:
+class TestE2EFixerExhaustion:
     @pytest.mark.asyncio
-    async def test_all_heal_attempts_fail(self, workspace):
+    async def test_all_fix_attempts_fail(self, workspace):
         ws = str(workspace)
+        # Use a complex feature PRD so the smart gate triggers the review path
+        complex_prd = {
+            "project_name": "e2e-test", "branch_name": "ralph/e2e",
+            "description": "E2E test project",
+            "features": [
+                {
+                    "id": "FEAT-001", "title": "Authentication & Security Integration", "priority": 1,
+                    "tasks": [
+                        {"id": "TASK-001", "category": "integration", "complexity": "complex",
+                         "title": "Implement multi-file authentication refactor with security middleware",
+                         "description": "Refactor auth across multiple files with security integration",
+                         "acceptance_criteria": ["auth works", "middleware active", "tokens validated",
+                                                 "sessions managed", "permissions enforced"],
+                         "status": "pending", "test_command": "pytest -v", "notes": ""},
+                    ],
+                },
+                {
+                    "id": "FEAT-002", "title": "Tests", "priority": 2,
+                    "tasks": [
+                        {"id": "TASK-002", "category": "quality", "complexity": "simple",
+                         "title": "Add tests", "description": "add tests",
+                         "acceptance_criteria": ["test exists", "pytest passes"],
+                         "status": "pending", "test_command": "pytest -v", "notes": ""},
+                    ],
+                },
+            ],
+        }
+        spec_resp = AgentResult(success=True, final_response="# Spec\nComplex project.", cost_usd=0.01)
+        prd_resp = AgentResult(
+            success=True,
+            final_response=f"```json\n{json.dumps(complex_prd, indent=2)}\n```",
+            cost_usd=0.02,
+        )
         responses = [
-            [_spec_only_response(), _spec_response(ws)],
+            [spec_resp, prd_resp],
             [_coding_ok("TASK-001")], [_qa_fail(ws)],
+            [_healer_ok()], [_qa_fail(ws)],
             [_healer_ok()], [_qa_fail(ws)],
             [_healer_ok()], [_qa_fail(ws)],
             [_coding_ok("TASK-002")], [_qa_pass(ws)],
@@ -201,10 +235,10 @@ class TestE2EHealerExhaustion:
         loop, mock_create = _make_loop(workspace, responses)
         with patch("ralph.loop._create_provider", side_effect=mock_create), \
              patch("ralph.loop.asyncio.sleep", return_value=None):
-            await loop.run("Build something")
+            await loop.run("Build something complex")
         prd = load_prd(loop.run_dir)
         task1 = next(t for t in prd.tasks if t.id == "TASK-001")
-        assert task1.status == TaskStatus.FAILED
+        assert task1.status == TaskStatus.BLOCKED
 
 
 class TestE2EBlocked:

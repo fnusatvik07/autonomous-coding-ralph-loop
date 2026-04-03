@@ -25,8 +25,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ralph.config import Config
+from ralph.learning import maybe_aggregate_learnings
 from ralph.memory.guardrails import add_guardrail, init_guardrails
-from ralph.memory.progress import append_progress, init_progress
+from ralph.memory.progress import append_progress, init_progress, update_project_state, update_codebase_patterns
 from ralph.models import AgentResult, PRD, QAResult, TaskStatus
 from ralph.observability import (
     generate_run_id, log_qa, log_session,
@@ -40,9 +41,10 @@ from ralph.shipper import ship as shipper_ship
 from ralph.providers import create_provider
 from ralph.providers.base import BaseProvider
 from ralph.qa.healer import run_healer
+from ralph.qa.reviewer import run_reviewer
 from ralph.qa.sentinel import run_sentinel
 from ralph.reflexion import get_reflections, init_reflections, reflect_on_failure
-from ralph.routing import get_model_for_phase, get_model_for_task
+from ralph.routing import get_model_for_phase, get_model_for_task, should_review_feature
 from ralph.spec.generator import generate_spec, load_prd, save_prd
 
 console = Console()
@@ -50,6 +52,9 @@ logger = logging.getLogger("ralph")
 
 INTER_ITERATION_DELAY = 3
 RALPH_DIR = ".ralph"
+MAX_FIXER_ATTEMPTS = 3
+WIND_DOWN_TOOL_CALLS = 150
+WIND_DOWN_DURATION_S = 300
 
 
 def _create_provider(config: Config, model_override: str = "") -> BaseProvider:
@@ -130,15 +135,12 @@ def _detect_completion(response: str, workspace_dir: str, current_task_id: str) 
     """Detect if the CURRENT task was completed. Returns True/False.
 
     Scoped to current_task_id to prevent stale ID false positives.
+    Uses exact match only for XML markers (no fuzzy matching).
     """
-    # Signal 1: Explicit XML marker
-    match = re.search(r"<ralph:task_complete>(.*?)</ralph:task_complete>", response)
-    if match:
+    # Signal 1: Explicit XML marker — find ALL markers, exact match only
+    for match in re.finditer(r"<ralph:task_complete>(.*?)</ralph:task_complete>", response):
         detected_id = match.group(1).strip()
         if detected_id == current_task_id:
-            return True
-        # Accept if it's close (e.g., agent wrote task ID without prefix)
-        if current_task_id.endswith(detected_id) or detected_id.endswith(current_task_id):
             return True
 
     # Signal 2: Agent updated prd.json - check if THIS task is now passed
@@ -186,12 +188,18 @@ def _detect_blocked(response: str) -> str | None:
 class RalphLoop:
     """Main orchestrator for the Ralph coding loop."""
 
+    _stop_requested: bool = False
+
     def __init__(self, config: Config):
         self.config = config
         self.workspace_dir = str(config.workspace_dir)
         self.cumulative_cost = 0.0
         self.run_id = generate_run_id()
         self._incomplete_counts: dict[str, int] = {}
+        self._prev_feature_had_issues = False
+
+    def request_stop(self):
+        self._stop_requested = True
 
     def on_text(self, text: str) -> None:
         """Text streaming callback. Override in WebRalphLoop for WS events."""
@@ -281,6 +289,9 @@ class RalphLoop:
 
     async def _main_loop(self, prd: PRD) -> None:
         for iteration in range(1, self.config.max_iterations + 1):
+            if self._stop_requested:
+                console.print("[yellow]Stop requested. Saving progress.[/yellow]")
+                break
             if self._budget_exceeded():
                 break
 
@@ -354,12 +365,20 @@ class RalphLoop:
                     tasks_list=tasks_list,
                 )
 
+            # Context wind-down: inject tool call limit into system prompt
+            effective_max_turns = min(self.config.max_turns_per_session, WIND_DOWN_TOOL_CALLS)
+            system_prompt += (
+                f"\n\n## Session Limits\n"
+                f"You have a maximum of {effective_max_turns} tool calls in this session. "
+                f"Plan your work accordingly — prioritize completing tasks over exploring."
+            )
+
             # Coding session — one session for the entire feature
             coding_result = await self._run_with_timeout(
                 provider.run_session(
                     system_prompt=system_prompt,
                     user_message=user_message,
-                    max_turns=self.config.max_turns_per_session,
+                    max_turns=effective_max_turns,
                     on_text=self.on_text,
                     on_tool=self.on_tool,
                 ),
@@ -387,38 +406,61 @@ class RalphLoop:
             if fmt_ok and "reformatted" in fmt_out.lower():
                 console.print("  [dim]Auto-formatted[/dim]")
 
-            # Check which tasks in the feature were completed
-            any_completed = False
+            # Split tasks into completed vs incomplete based on completion signals
+            completed_tasks = []
+            incomplete_tasks = []
             for task in pending_tasks:
-                completed = _detect_completion(coding_result.final_response, self.run_dir, task.id)
-
-                if completed:
-                    any_completed = True
-                    console.print(f"  [cyan]QA: {task.id}...[/cyan]")
-                    qa_result = await self._run_qa(task, iteration)
-
-                    if qa_result.passed:
-                        console.print(f"  [bold green]✓ QA PASSED[/bold green] — {task.id}")
-                        self._complete_task(prd, task, iteration)
-                    else:
-                        console.print(f"  [bold red]✗ QA FAILED[/bold red] — {task.id}: {'; '.join(qa_result.issues[:2])}")
-                        console.print(f"  [yellow]Healer: {task.id}...[/yellow]")
-                        healed = await self._run_healer_loop(task, qa_result, iteration)
-                        if healed:
-                            console.print(f"  [bold green]✓ Healer FIXED[/bold green] — {task.id}")
-                            self._complete_task(prd, task, iteration, "(after healing)")
-                        else:
-                            self._fail_task(prd, task, iteration, qa_result)
-                            if self.config.enable_reflexion:
-                                await self._reflect(task, iteration, "QA_FAILED",
-                                                    "; ".join(qa_result.issues[:5]))
+                if _detect_completion(coding_result.final_response, self.run_dir, task.id):
+                    completed_tasks.append(task)
                 else:
-                    blocked = _detect_blocked(coding_result.final_response)
-                    if blocked and task.id in str(blocked):
-                        console.print(f"  [red]BLOCKED: {task.id} — {blocked[:80]}[/red]")
-                        add_guardrail(self.run_dir, sign=blocked, context=task.title)
+                    incomplete_tasks.append(task)
 
-            if not any_completed:
+            # Smart gate: decide if this feature needs review
+            needs_review = should_review_feature(feature) or self._prev_feature_had_issues
+            feature_had_issues = False
+
+            if completed_tasks:
+                if needs_review:
+                    # Reviewed path: QA sentinel per task, fixer on failure
+                    for task in completed_tasks:
+                        console.print(f"  [cyan]QA: {task.id}...[/cyan]")
+                        qa_result = await self._run_qa(task, iteration)
+
+                        if qa_result.passed:
+                            console.print(f"  [bold green]✓ QA PASSED[/bold green] — {task.id}")
+                            await self._complete_task(prd, task, iteration)
+                        else:
+                            console.print(f"  [bold red]✗ QA FAILED[/bold red] — {task.id}: {'; '.join(qa_result.issues[:2])}")
+                            feature_had_issues = True
+                            console.print(f"  [yellow]Fixer: {task.id}...[/yellow]")
+                            fixed = await self._run_fixer_loop(task, qa_result, iteration)
+                            if fixed:
+                                console.print(f"  [bold green]✓ Fixer FIXED[/bold green] — {task.id}")
+                                await self._complete_task(prd, task, iteration, "(after fixing)")
+                            else:
+                                self._block_task(prd, task, iteration, qa_result)
+                                if self.config.enable_reflexion:
+                                    await self._reflect(task, iteration, "QA_FAILED",
+                                                        "; ".join(qa_result.issues[:5]))
+
+                    # Feature-level review after all tasks pass
+                    await self._run_feature_review(feature, iteration)
+                else:
+                    # Fast path: trust coder, skip QA for simple features
+                    for task in completed_tasks:
+                        console.print(f"  [bold green]✓ PASSED (fast path)[/bold green] — {task.id}")
+                        await self._complete_task(prd, task, iteration, "(fast path)")
+
+            # Handle incomplete tasks individually
+            for task in incomplete_tasks:
+                blocked = _detect_blocked(coding_result.final_response)
+                if blocked and task.id in str(blocked):
+                    console.print(f"  [red]BLOCKED: {task.id} — {blocked[:80]}[/red]")
+                    add_guardrail(self.run_dir, sign=blocked, context=task.title)
+
+            self._prev_feature_had_issues = feature_had_issues
+
+            if not completed_tasks:
                 # No tasks completed — count as incomplete for the first pending task
                 first = pending_tasks[0]
                 blocked = _detect_blocked(coding_result.final_response)
@@ -493,7 +535,13 @@ class RalphLoop:
         if not task_description:
             raise RuntimeError("No PRD and no task description provided. Use 'ralph run' with a task.")
         provider = _create_provider(self.config)
-        return await generate_spec(task_description, provider, self.run_dir)
+        prd = await generate_spec(task_description, provider, self.run_dir)
+        # Verify init.sh exists after spec generation
+        init_sh = Path(self.run_dir) / "init.sh"
+        if not init_sh.exists():
+            console.print("  [yellow]Warning: init.sh not created by spec generator[/yellow]")
+            logger.warning("init.sh missing after spec generation")
+        return prd
 
     async def _run_qa(self, task, iteration: int) -> QAResult:
         provider = _create_provider(self.config)
@@ -518,6 +566,7 @@ class RalphLoop:
                     qa_result=qa_result, provider=provider,
                     task_id=task.id, task_title=task.title,
                     max_attempts=self.config.max_healer_attempts, attempt=attempt,
+                    workspace_dir=self.workspace_dir,
                 ),
                 label=f"healer {task.id} attempt {attempt}",
             )
@@ -540,7 +589,83 @@ class RalphLoop:
             console.print(f"    [yellow]Heal attempt {attempt} - still failing[/yellow]")
         return False
 
-    def _complete_task(self, prd: PRD, task, iteration: int, suffix: str = "") -> None:
+    async def _run_fixer_loop(self, task, qa_result: QAResult, iteration: int) -> bool:
+        """Run fixer loop (uses healer internally). Max MAX_FIXER_ATTEMPTS."""
+        for attempt in range(1, MAX_FIXER_ATTEMPTS + 1):
+            provider = _create_provider(self.config)
+            healer_result = await self._run_with_timeout(
+                run_healer(
+                    qa_result=qa_result, provider=provider,
+                    task_id=task.id, task_title=task.title,
+                    max_attempts=MAX_FIXER_ATTEMPTS, attempt=attempt,
+                    workspace_dir=self.workspace_dir,
+                ),
+                label=f"fixer {task.id} attempt {attempt}",
+            )
+            if isinstance(healer_result, AgentResult):
+                self.cumulative_cost += healer_result.cost_usd
+                log_session(self.run_dir, self.run_id, iteration,
+                            f"fixer-{attempt}", task.id, healer_result)
+
+            provider = _create_provider(self.config)
+            qa_result = await self._run_with_timeout(
+                run_sentinel(task, provider, self.workspace_dir),
+                label=f"qa-post-fix {task.id}",
+            )
+            if not isinstance(qa_result, QAResult):
+                qa_result = QAResult(passed=False, issues=["QA timed out after fix"])
+            log_qa(self.run_dir, self.run_id, iteration, task.id, qa_result)
+
+            if qa_result.passed:
+                return True
+            console.print(f"    [yellow]Fix attempt {attempt} - still failing[/yellow]")
+        return False
+
+    def _block_task(self, prd: PRD, task, iteration: int, qa_result: QAResult) -> None:
+        """Mark task as BLOCKED (not FAILED) and write guardrail."""
+        console.print(f"  [red]BLOCKED: {task.id}[/red]")
+        old_status = task.status.value
+        prd.mark_task(task.id, TaskStatus.BLOCKED, notes=f"QA: {'; '.join(qa_result.issues[:3])}")
+        save_prd(prd, self.run_dir)
+        log_task_transition(self.run_dir, self.run_id, task.id, old_status, "blocked", iteration)
+        add_guardrail(self.run_dir, sign=f"{task.id} blocked: {'; '.join(qa_result.issues[:3])}", context=task.title)
+        append_progress(
+            self.run_dir, iteration=iteration,
+            task_id=task.id, task_title=task.title,
+            status="BLOCKED", notes=f"QA: {'; '.join(qa_result.issues[:3])}",
+        )
+        logger.warning("task %s BLOCKED: %s", task.id, qa_result.issues[:3])
+
+    async def _run_feature_review(self, feature, iteration: int) -> None:
+        """Run feature-level code review after all tasks pass."""
+        try:
+            provider = _create_provider(self.config)
+            console.print(f"  [dim]Feature review: {feature.id}...[/dim]")
+            all_criteria = [
+                ac for t in feature.tasks for ac in t.acceptance_criteria
+            ]
+            review_result = await self._run_with_timeout(
+                run_reviewer(
+                    workspace_dir=self.workspace_dir,
+                    provider=provider,
+                    feature_title=feature.title,
+                    acceptance_criteria=all_criteria[:20],
+                ),
+                label=f"review {feature.id}",
+            )
+            if isinstance(review_result, QAResult):
+                self.cumulative_cost += review_result.cost_usd
+                if review_result.passed:
+                    console.print(f"  [green]Feature review: approved[/green]")
+                else:
+                    console.print(f"  [yellow]Feature review: {'; '.join(review_result.issues[:2])}[/yellow]")
+                if review_result.suggestions:
+                    for s in review_result.suggestions[:3]:
+                        console.print(f"    [dim]Suggestion: {s}[/dim]")
+        except Exception as e:
+            logger.debug("feature review skipped: %s", e)
+
+    async def _complete_task(self, prd: PRD, task, iteration: int, suffix: str = "") -> None:
         old_status = task.status.value
         prd.mark_task(task.id, TaskStatus.PASSED)
         save_prd(prd, self.run_dir)
@@ -553,6 +678,9 @@ class RalphLoop:
         logger.info("task %s PASSED %s", task.id, suffix)
         # Reset incomplete counter
         self._incomplete_counts.pop(task.id, None)
+        # Update project state and aggregate learnings
+        update_project_state(self.run_dir)
+        maybe_aggregate_learnings(self.run_dir)
 
     def _fail_task(self, prd: PRD, task, iteration: int, qa_result: QAResult) -> None:
         console.print(f"  [red]FAILED: {task.id}[/red]")

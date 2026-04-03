@@ -10,13 +10,13 @@ class TestProgress:
         init_progress(str(workspace_with_ralph))
         path = workspace_with_ralph / ".ralph" / "progress.md"
         assert path.exists()
-        assert "# Ralph Loop Progress" in path.read_text()
+        assert "# Project Progress" in path.read_text()
 
     def test_init_idempotent(self, workspace_with_ralph):
         init_progress(str(workspace_with_ralph))
         init_progress(str(workspace_with_ralph))  # Should not fail or duplicate
         content = (workspace_with_ralph / ".ralph" / "progress.md").read_text()
-        assert content.count("# Ralph Loop Progress") == 1
+        assert content.count("# Project Progress") == 1
 
     def test_append_progress(self, workspace_with_ralph):
         init_progress(str(workspace_with_ralph))

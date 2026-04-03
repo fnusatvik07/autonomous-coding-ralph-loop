@@ -5,6 +5,8 @@ Fixes: now includes task context and guardrails reference.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.console import Console
 
 from ralph.models import AgentResult, QAResult
@@ -21,6 +23,7 @@ async def run_healer(
     task_title: str = "",
     max_attempts: int = 5,
     attempt: int = 1,
+    workspace_dir: str = "",
 ) -> AgentResult:
     """Run one healer iteration to fix QA issues."""
     issues_text = "\n".join(f"- {issue}" for issue in qa_result.issues)
@@ -36,6 +39,14 @@ async def run_healer(
         issues=issues_text,
         test_output=qa_result.test_output[:5000],
     )
+
+    # Inject guardrails if available
+    if workspace_dir:
+        guardrails_path = Path(workspace_dir) / ".ralph" / "guardrails.md"
+        if guardrails_path.exists():
+            guardrails_content = guardrails_path.read_text()
+            if guardrails_content and "No guardrails" not in guardrails_content:
+                user_message += f"\n\n## Known Pitfalls (from guardrails.md):\n{guardrails_content[:3000]}"
 
     console.print(
         f"    [magenta]Healer: attempt {attempt}/{max_attempts}[/magenta]"

@@ -19,7 +19,6 @@ class WebRalphLoop(RalphLoop):
     def __init__(self, config: Config, event_bus: EventBus):
         super().__init__(config)
         self.event_bus = event_bus
-        self._stop_requested = False
 
     def on_text(self, text: str) -> None:
         """Override: emit text to WebSocket AND console."""
@@ -56,5 +55,5 @@ class WebRalphLoop(RalphLoop):
 
     def request_stop(self) -> None:
         """Request graceful stop of the loop."""
-        self._stop_requested = True
+        super().request_stop()
         logger.info("stop requested for run %s", self.run_id)

@@ -119,6 +119,14 @@ each handles missing resources, each has tests. That's 4+ tasks per endpoint.
 Tasks can ONLY change status: "pending" → "passed" or "blocked".
 Never remove, edit descriptions, or modify criteria.
 
+### TEST COMMAND RULES
+
+Every task's `test_command` MUST:
+- Use **relative paths** (e.g., `pytest tests/test_api.py -v`)
+- **NEVER** use absolute paths (e.g., `/home/user/project/tests/...`)
+- Be runnable from the workspace root directory
+- Use `python -m pytest` or `pytest` (not `/usr/bin/python`)
+
 ### ALSO CREATE: init.sh
 
 Create `init.sh` in the workspace root:

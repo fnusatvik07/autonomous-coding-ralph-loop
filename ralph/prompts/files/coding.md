@@ -79,6 +79,8 @@ Write the code needed to make this feature's acceptance criteria pass.
 - Follow existing patterns and conventions
 - Write clean, well-structured code
 - Handle error cases properly
+- Check `.ralph/progress.md` "Current State" section for workspace overview
+- Check `.ralph/progress.md` "Codebase Patterns" section for learned patterns
 
 ### STEP 6: WRITE TESTS
 
@@ -115,6 +117,10 @@ Tests must:
 
 **CRITICAL:** You MUST verify by ACTUALLY RUNNING the tests, not just
 reading the code and assuming it works.
+
+**Step 7a: Verify files exist after writing.** After creating or editing files,
+confirm they exist on disk with `ls` or `cat`. Write tool failures are silent —
+always verify.
 
 **Do this in order:**
 

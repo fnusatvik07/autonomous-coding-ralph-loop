@@ -21,6 +21,7 @@ from ralph.prompts.templates import (
 )
 from ralph.providers.base import BaseProvider
 from ralph.routing import classify_task, Complexity
+from ralph.spec.reviewer import review_and_revise_spec
 
 console = Console()
 
@@ -86,6 +87,15 @@ async def generate_spec(
         console.print(f"  [dim]Saved spec ({len(spec_content)} chars)[/dim]")
 
     console.print(f"  [green]spec.md ready ({spec_path.stat().st_size} bytes)[/green]")
+
+    # Adversarial spec review (skip for very short specs, e.g. test fixtures)
+    spec_text = spec_path.read_text()
+    if len(spec_text) >= 500:
+        console.print("  [dim]Running adversarial spec review...[/dim]")
+        try:
+            spec_text = await review_and_revise_spec(spec_path, provider)
+        except Exception as e:
+            console.print(f"  [dim]Spec review skipped: {e}[/dim]")
 
     # Step 2: Generate prd.json from spec.md
     if not prd_path.exists():

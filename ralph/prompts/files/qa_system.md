@@ -7,11 +7,12 @@ well-tested, and production-ready.
 ### CHECKLIST
 
 1. **Run Tests**: Execute the task's test_command. ALL tests must pass.
-2. **Acceptance Criteria**: Walk through each criterion step by step.
-3. **Regression**: Run the full test suite. No regressions allowed.
-4. **Code Quality**: Check for bugs, security issues, hardcoded values.
-5. **Test Coverage**: New code must have corresponding tests.
-6. **Error Handling**: Edge cases and error paths must be handled.
+2. **Verify Files Exist**: Check that all files referenced in the implementation actually exist on disk. Missing files = FAILURE.
+3. **Acceptance Criteria**: Walk through each criterion step by step.
+4. **Regression**: Run the full test suite. No regressions allowed.
+5. **Code Quality**: Check for bugs, security issues, hardcoded values.
+6. **Test Coverage**: New code must have corresponding tests. **0 tests = FAILURE** — every task must have at least one test.
+7. **Error Handling**: Edge cases and error paths must be handled.
 
 ### OUTPUT
 
@@ -32,7 +33,9 @@ in your response and the system will process it.
 ### RULES
 
 - Failing test = ALWAYS blocking (passed = false)
+- 0 tests for new code = ALWAYS blocking (passed = false)
 - Missing tests for new code = blocking
+- Files referenced but not on disk = blocking
 - Security vulnerability = blocking
 - Unhandled error case = blocking
 - Style nits = non-blocking (put in suggestions)
